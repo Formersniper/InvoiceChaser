@@ -186,56 +186,37 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setIsLoadingAuth(true);
       const token = getStoredToken();
 
-      // If no token exists, provide initial seamless demo login
       if (!token) {
-        try {
-          const res = await api.post('/api/auth/login', {
-            email: 'sainianupam07@gmail.com',
-            password: 'password123',
-          });
-          setStoredToken(res.token);
-          setUser(res.user);
-          setOrganization(res.organization);
-          setStoredOrgId(res.organization.id);
-          setOrganizations(res.workspace.organizations || [res.organization]);
-          setMembership(res.workspace.membership);
-          setAutomationSettings(res.workspace.automationSettings);
-          setAiSettings(res.workspace.aiSettings);
-          setSubscription(res.workspace.subscription);
-          setUsage({
-            ...res.workspace.usage,
-            remindersSentThisMonth: res.workspace.usage.remindersSentCount,
-          });
-          setIsAuthenticated(true);
-          await fetchOrgData(res.organization.id);
-        } catch {
-          setIsAuthenticated(false);
-        }
-      } else {
-        try {
-          const res = await api.get('/api/auth/me');
-          setUser(res.user);
-          const workspace = res.workspace;
-          setOrganization(workspace.organization);
-          setStoredOrgId(workspace.organization.id);
-          setOrganizations(workspace.organizations || [workspace.organization]);
-          setMembership(workspace.membership);
-          setAutomationSettings(workspace.automationSettings);
-          setAiSettings(workspace.aiSettings);
-          setSubscription(workspace.subscription);
-          setUsage({
-            ...workspace.usage,
-            remindersSentThisMonth: workspace.usage.remindersSentCount,
-          });
-          setIsAuthenticated(true);
-          await fetchOrgData(workspace.organization.id);
-        } catch (err) {
-          console.warn('Session expired or invalid token:', err);
-          setStoredToken(null);
-          setIsAuthenticated(false);
-        }
+        setIsAuthenticated(false);
+        setIsLoadingAuth(false);
+        return;
       }
-      setIsLoadingAuth(false);
+
+      try {
+        const res = await api.get('/api/auth/me');
+        setUser(res.user);
+        const workspace = res.workspace;
+        setOrganization(workspace.organization);
+        setStoredOrgId(workspace.organization.id);
+        setOrganizations(workspace.organizations || [workspace.organization]);
+        setMembership(workspace.membership);
+        setAutomationSettings(workspace.automationSettings);
+        setAiSettings(workspace.aiSettings);
+        setSubscription(workspace.subscription);
+        setUsage({
+          ...workspace.usage,
+          remindersSentThisMonth: workspace.usage.remindersSentCount,
+        });
+        setIsAuthenticated(true);
+        await fetchOrgData(workspace.organization.id);
+      } catch (err) {
+        console.warn('Session expired or invalid token:', err);
+        setStoredToken(null);
+        setStoredOrgId(null);
+        setIsAuthenticated(false);
+      } finally {
+        setIsLoadingAuth(false);
+      }
     }
 
     initSession();

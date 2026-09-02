@@ -138,9 +138,9 @@ export interface Reminder {
 export interface EmailEvent {
   id: string;
   organizationId: string;
-  invoiceId: string;
-  clientId: string;
-  gmailMessageId: string;
+  invoiceId?: string;
+  clientId?: string;
+  gmailMessageId?: string;
   threadId?: string;
   direction: EmailDirection;
   eventType: EmailEventType;
@@ -171,7 +171,7 @@ export interface AuditLog {
   organizationId: string;
   userId?: string;
   eventType: string;
-  entityType: 'INVOICE' | 'REMINDER' | 'CLIENT' | 'CONNECTION' | 'SETTINGS' | 'BILLING';
+  entityType: 'INVOICE' | 'REMINDER' | 'CLIENT' | 'CONNECTION' | 'SETTINGS' | 'BILLING' | 'ORGANIZATION' | 'INTEGRATION' | 'SUBSCRIPTION' | 'AUTH';
   entityId: string;
   message: string;
   metadata?: Record<string, unknown>;

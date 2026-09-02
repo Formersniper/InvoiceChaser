@@ -1,9 +1,8 @@
 import { Router } from 'express';
-import bcrypt from 'bcryptjs';
+import { getSupabase } from '../supabase';
 import {
-  createUser,
-  findUserByEmail,
   findUserById,
+  upsertUserRecord,
   createOrganizationForUser,
   getUserOrganizations,
   getWorkspaceSnapshot,
@@ -33,7 +32,9 @@ import {
   getConnections,
   upsertConnection,
   disconnectConnection,
+  getAutomationSettings,
   updateAutomationSettings,
+  getAISettings,
   updateAISettings,
   updateSubscriptionPlan,
   getNotifications,
@@ -42,12 +43,12 @@ import {
   updateOrganization,
   updateUserProfile,
 } from '../db';
-import { signAuthToken, requireAuth, requireOrgMember, AuthenticatedRequest } from '../auth';
+import { requireAuth, requireOrgMember, AuthenticatedRequest } from '../auth';
 
 export const apiRouter = Router();
 
 /* -------------------------------------------------------------
-   PUBLIC AUTH ENDPOINTS
+   PUBLIC AUTH ENDPOINTS (Supabase Auth Authority)
 ------------------------------------------------------------- */
 apiRouter.post('/auth/signup', async (req, res) => {
   try {
@@ -56,28 +57,70 @@ apiRouter.post('/auth/signup', async (req, res) => {
       return res.status(400).json({ error: 'Email, password, and name are required.' });
     }
 
-    const existing = await findUserByEmail(email);
-    if (existing) {
-      return res.status(400).json({ error: 'An account with this email already exists. Please log in.' });
+    const normalizedEmail = email.trim().toLowerCase();
+    const cleanName = name.trim();
+    const supabase = getSupabase();
+
+    // 1. Sign up user via Supabase Auth
+    const { data: authData, error: authError } = await supabase.auth.signUp({
+      email: normalizedEmail,
+      password,
+      options: {
+        data: {
+          name: cleanName,
+          companyName: companyName ? companyName.trim() : `${cleanName}'s Studio`,
+        },
+      },
+    });
+
+    if (authError || !authData.user) {
+      return res.status(400).json({
+        error: authError?.message || 'Failed to create user in Supabase Auth.',
+      });
     }
 
-    // 1. Create authenticated user
-    const user = await createUser({ email, name, password });
+    const authUser = authData.user;
 
-    // 2. Create organization, owner membership, and default settings
+    // 2. Ensure application profile exists in public.users
+    const user = await upsertUserRecord({
+      id: authUser.id,
+      email: normalizedEmail,
+      name: cleanName,
+      avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(cleanName)}`,
+    });
+
+    // 3. Create initial organization & owner membership
     const { organization, membership } = await createOrganizationForUser(
       user,
-      companyName || `${name}'s Studio`
+      companyName ? companyName.trim() : `${cleanName}'s Studio`
     );
 
-    // 3. Issue session token
-    const token = signAuthToken(user);
+    // 4. Retrieve authoritative Supabase access token
+    let token = authData.session?.access_token;
+    if (!token) {
+      const { data: signInData } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      });
+      if (signInData?.session?.access_token) {
+        token = signInData.session.access_token;
+      }
+    }
 
-    // 4. Return workspace data
+    // Set cookie if token is available
+    if (token) {
+      res.cookie('ic_token', token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+    }
+
     const workspace = await getWorkspaceSnapshot(user.id, organization.id);
 
     return res.status(201).json({
-      token,
+      token: token || '',
       user: {
         id: user.id,
         email: user.email,
@@ -89,8 +132,8 @@ apiRouter.post('/auth/signup', async (req, res) => {
       workspace,
     });
   } catch (err: unknown) {
-    console.error('Signup error:', err);
     const msg = err instanceof Error ? err.message : 'Signup failed.';
+    console.error('Signup error:', msg);
     return res.status(500).json({ error: msg });
   }
 });
@@ -98,31 +141,57 @@ apiRouter.post('/auth/signup', async (req, res) => {
 apiRouter.post('/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required.' });
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
     }
 
-    const user = await findUserByEmail(email);
+    const normalizedEmail = email.trim().toLowerCase();
+    const supabase = getSupabase();
+
+    // 1. Authenticate with Supabase Auth
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+      email: normalizedEmail,
+      password,
+    });
+
+    if (authError || !authData.user || !authData.session) {
+      return res.status(401).json({ error: authError?.message || 'Invalid email or password.' });
+    }
+
+    const authUser = authData.user;
+    const token = authData.session.access_token;
+
+    // 2. Resolve or upsert profile in public.users
+    let user = await findUserById(authUser.id);
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
+      const name =
+        authUser.user_metadata?.name ||
+        (authUser.email ? authUser.email.split('@')[0] : 'User');
+      user = await upsertUserRecord({
+        id: authUser.id,
+        email: authUser.email || normalizedEmail,
+        name,
+        avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(name)}`,
+      });
     }
 
-    // Verify password (or allow demo login if user has hash)
-    if (user.passwordHash && password) {
-      const isMatch = await bcrypt.compare(password, user.passwordHash);
-      if (!isMatch && password !== '••••••••••••' && password !== 'password123') {
-        return res.status(401).json({ error: 'Invalid email or password.' });
-      }
-    }
-
-    const token = signAuthToken(user);
+    // 3. Resolve user organizations
     const orgs = await getUserOrganizations(user.id);
     let organization = orgs[0];
 
     if (!organization) {
-      const created = await createOrganizationForUser(user, `${user.name}'s Studio`);
+      const orgName = authUser.user_metadata?.companyName || `${user.name}'s Studio`;
+      const created = await createOrganizationForUser(user, orgName);
       organization = created.organization;
     }
+
+    // Set cookie
+    res.cookie('ic_token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
 
     const workspace = await getWorkspaceSnapshot(user.id, organization.id);
 
@@ -138,26 +207,40 @@ apiRouter.post('/auth/login', async (req, res) => {
       workspace,
     });
   } catch (err: unknown) {
-    console.error('Login error:', err);
     const msg = err instanceof Error ? err.message : 'Login failed.';
+    console.error('Login error:', msg);
     return res.status(500).json({ error: msg });
   }
 });
 
 apiRouter.post('/auth/forgot-password', async (req, res) => {
-  const { email } = req.body;
-  if (!email) {
-    return res.status(400).json({ error: 'Email address is required.' });
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Email address is required.' });
+    }
+
+    const supabase = getSupabase();
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase());
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.json({
+      success: true,
+      message: `Password reset instructions have been sent to ${email}.`,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Password reset failed.';
+    console.error('Forgot password error:', msg);
+    return res.status(500).json({ error: msg });
   }
-  // In production, this dispatches a recovery link
-  return res.json({
-    success: true,
-    message: `Password reset instructions dispatched to ${email}.`,
-  });
 });
 
 apiRouter.post('/auth/logout', (req, res) => {
   res.clearCookie('ic_token');
+  res.clearCookie('sb_token');
   return res.json({ success: true, message: 'Logged out successfully.' });
 });
 
@@ -182,6 +265,7 @@ apiRouter.get('/auth/me', requireAuth, async (req: AuthenticatedRequest, res) =>
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch session.';
+    console.error('Me endpoint error:', msg);
     return res.status(500).json({ error: msg });
   }
 });
@@ -198,6 +282,7 @@ apiRouter.patch('/auth/profile', requireAuth, async (req: AuthenticatedRequest, 
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to update profile.';
+    console.error('Profile update error:', msg);
     return res.status(500).json({ error: msg });
   }
 });
@@ -209,6 +294,7 @@ apiRouter.get('/workspace', requireAuth, async (req: AuthenticatedRequest, res) 
     return res.json(workspace);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch workspace.';
+    console.error('Workspace fetch error:', msg);
     return res.status(500).json({ error: msg });
   }
 });
@@ -219,6 +305,7 @@ apiRouter.get('/organizations', requireAuth, async (req: AuthenticatedRequest, r
     return res.json(orgs);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch organizations.';
+    console.error('Organizations fetch error:', msg);
     return res.status(500).json({ error: msg });
   }
 });
@@ -231,6 +318,7 @@ apiRouter.post('/organizations', requireAuth, async (req: AuthenticatedRequest, 
     return res.status(201).json({ organization, membership });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to create organization.';
+    console.error('Organization creation error:', msg);
     return res.status(500).json({ error: msg });
   }
 });
@@ -242,19 +330,22 @@ apiRouter.patch('/organizations/:id', requireAuth, requireOrgMember, async (req:
     return res.json(updated);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to update organization.';
+    console.error('Organization update error:', msg);
     return res.status(500).json({ error: msg });
   }
 });
 
 /* -------------------------------------------------------------
-   CLIENTS API
+   CLIENTS API (Tenant Scoped)
 ------------------------------------------------------------- */
 apiRouter.get('/clients', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const clients = await getClients(req.organizationId!);
     return res.json(clients);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to fetch clients.' });
+    const msg = err instanceof Error ? err.message : 'Failed to fetch clients.';
+    console.error('Clients fetch error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
@@ -289,7 +380,9 @@ apiRouter.post('/clients', requireAuth, requireOrgMember, async (req: Authentica
 
     return res.status(201).json(client);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to create client.' });
+    const msg = err instanceof Error ? err.message : 'Failed to create client.';
+    console.error('Client creation error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
@@ -298,127 +391,102 @@ apiRouter.patch('/clients/:id', requireAuth, requireOrgMember, async (req: Authe
     const updated = await updateClient(req.organizationId!, req.params.id, req.body);
     return res.json(updated);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to update client.' });
+    const msg = err instanceof Error ? err.message : 'Failed to update client.';
+    console.error('Client update error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 apiRouter.delete('/clients/:id', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    const success = await deleteClient(req.organizationId!, req.params.id);
-    if (!success) return res.status(404).json({ error: 'Client not found.' });
-    return res.json({ success: true });
-  } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to delete client.' });
-  }
-});
-
-apiRouter.post('/clients/:id/toggle-never-contact', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
-  try {
     const client = await getClientById(req.organizationId!, req.params.id);
-    if (!client) return res.status(404).json({ error: 'Client not found.' });
-    const updated = await updateClient(req.organizationId!, req.params.id, {
-      neverContact: !client.neverContact,
-    });
-    return res.json(updated);
+    await deleteClient(req.organizationId!, req.params.id);
+
+    if (client) {
+      await createAuditLog(req.organizationId!, {
+        userId: req.user!.id,
+        eventType: 'CLIENT_DELETED',
+        entityType: 'CLIENT',
+        entityId: req.params.id,
+        message: `Deleted client ${client.name}.`,
+      });
+    }
+
+    return res.json({ success: true, message: 'Client deleted successfully.' });
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to toggle client contact status.' });
+    const msg = err instanceof Error ? err.message : 'Failed to delete client.';
+    console.error('Client deletion error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 /* -------------------------------------------------------------
-   INVOICES API
+   INVOICES API (Tenant Scoped & Protected)
 ------------------------------------------------------------- */
 apiRouter.get('/invoices', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const invoices = await getInvoices(req.organizationId!);
     return res.json(invoices);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to fetch invoices.' });
+    const msg = err instanceof Error ? err.message : 'Failed to fetch invoices.';
+    console.error('Invoices fetch error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 apiRouter.post('/invoices', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const {
-      clientId,
+      invoiceNumber,
       clientName,
       clientEmail,
       companyName,
-      invoiceNumber,
       invoiceAmount,
       currency,
       invoiceDate,
       dueDate,
+      status,
       notes,
-      source,
     } = req.body;
 
-    if (!invoiceNumber || !invoiceAmount || !dueDate) {
-      return res.status(400).json({ error: 'Invoice number, amount, and due date are required.' });
-    }
-
-    // Auto-create client if not found
-    let resolvedClientId = clientId;
-    if (!resolvedClientId && clientName && clientEmail) {
-      const client = await createClient(req.organizationId!, {
-        name: clientName,
-        email: clientEmail,
-        companyName: companyName || clientName,
-        relationshipType: 'REGULAR',
-        paymentReliabilityScore: 85,
-        averagePaymentDelayDays: 0,
-        totalInvoiced: 0,
-        totalPaid: 0,
-        totalOutstanding: 0,
-        neverContact: false,
+    if (!invoiceNumber || !clientName || !clientEmail || invoiceAmount === undefined) {
+      return res.status(400).json({
+        error: 'Invoice number, client name, client email, and amount are required.',
       });
-      resolvedClientId = client.id;
     }
-
-    const dueDateTime = new Date(dueDate).getTime();
-    const nowTime = new Date().getTime();
-    const diffDays = Math.max(0, Math.floor((nowTime - dueDateTime) / (1000 * 60 * 60 * 24)));
-    const initialStatus = diffDays > 0 ? 'OVERDUE' : 'DUE';
 
     const invoice = await createInvoice(req.organizationId!, {
-      clientId: resolvedClientId || 'cli_manual',
-      clientName: clientName || 'Client',
-      clientEmail: clientEmail || 'billing@client.com',
-      companyName: companyName || clientName || 'Company',
+      clientId: '',
+      clientName,
+      clientEmail,
+      companyName,
       invoiceNumber,
       invoiceAmount: Number(invoiceAmount),
-      currency: currency || req.organization?.currency || 'INR',
+      currency: currency || 'INR',
       invoiceDate: invoiceDate || new Date().toISOString().substring(0, 10),
-      dueDate,
-      status: initialStatus,
-      daysOverdue: diffDays,
-      source: source || 'MANUAL',
-      isPaused: false,
+      dueDate: dueDate || new Date(Date.now() + 14 * 86400000).toISOString().substring(0, 10),
+      status: status || 'DUE',
+      daysOverdue: 0,
+      source: 'MANUAL',
       reminderCount: 0,
+      isPaused: false,
       extractionConfidence: 'HIGH',
       notes,
     });
 
-    // Auto-schedule step 1 reminder draft in review queue
-    const scheduledDate = new Date(Date.now() + 2 * 86400000).toISOString();
-    await createReminder(req.organizationId!, {
-      invoiceId: invoice.id,
-      clientId: invoice.clientId,
-      sequenceNumber: 1,
-      scheduledAt: scheduledDate,
-      status: 'PENDING_APPROVAL',
-      tone: 'PROFESSIONAL',
-      subject: `Payment reminder: Invoice #${invoice.invoiceNumber} from ${req.organization?.name || 'our studio'}`,
-      body: `Hi ${invoice.clientName},\n\nI hope you're having a productive week.\n\nThis is a friendly reminder regarding Invoice #${invoice.invoiceNumber} for ${invoice.currency} ${invoice.invoiceAmount.toLocaleString()} which is scheduled for payment by ${invoice.dueDate}.\n\nPlease let us know if you need another copy or banking details.\n\nBest regards,\n${req.user!.name}\n${req.organization?.name}`,
-      aiGenerated: true,
-      approvedByUser: false,
-      requiresReview: true,
+    await createAuditLog(req.organizationId!, {
+      userId: req.user!.id,
+      eventType: 'INVOICE_CREATED',
+      entityType: 'INVOICE',
+      entityId: invoice.id,
+      message: `Created invoice #${invoice.invoiceNumber} for ${invoice.clientName} (${invoice.currency} ${invoice.invoiceAmount.toLocaleString()}).`,
     });
 
     return res.status(201).json(invoice);
   } catch (err: unknown) {
-    console.error('Invoice creation error:', err);
-    return res.status(500).json({ error: 'Failed to create invoice.' });
+    const msg = err instanceof Error ? err.message : 'Failed to create invoice.';
+    console.error('Invoice creation error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
@@ -427,26 +495,56 @@ apiRouter.patch('/invoices/:id', requireAuth, requireOrgMember, async (req: Auth
     const updated = await updateInvoice(req.organizationId!, req.params.id, req.body);
     return res.json(updated);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to update invoice.' });
+    const msg = err instanceof Error ? err.message : 'Failed to update invoice.';
+    console.error('Invoice update error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 apiRouter.delete('/invoices/:id', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    const success = await deleteInvoice(req.organizationId!, req.params.id);
-    if (!success) return res.status(404).json({ error: 'Invoice not found.' });
-    return res.json({ success: true });
+    const inv = await getInvoiceById(req.organizationId!, req.params.id);
+    await deleteInvoice(req.organizationId!, req.params.id);
+
+    if (inv) {
+      await createAuditLog(req.organizationId!, {
+        userId: req.user!.id,
+        eventType: 'INVOICE_DELETED',
+        entityType: 'INVOICE',
+        entityId: req.params.id,
+        message: `Deleted invoice #${inv.invoiceNumber}.`,
+      });
+    }
+
+    return res.json({ success: true, message: 'Invoice deleted successfully.' });
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to delete invoice.' });
+    const msg = err instanceof Error ? err.message : 'Failed to delete invoice.';
+    console.error('Invoice deletion error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 apiRouter.post('/invoices/:id/mark-paid', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const paidInvoice = await markInvoicePaid(req.organizationId!, req.params.id);
-    return res.json(paidInvoice);
+
+    await createAuditLog(req.organizationId!, {
+      userId: req.user!.id,
+      eventType: 'PAYMENT_RECORDED',
+      entityType: 'INVOICE',
+      entityId: paidInvoice.id,
+      message: `Invoice #${paidInvoice.invoiceNumber} marked as PAID. All outstanding reminders permanently stopped.`,
+    });
+
+    return res.json({
+      success: true,
+      invoice: paidInvoice,
+      message: `Invoice #${paidInvoice.invoiceNumber} recorded as PAID. Reminders halted.`,
+    });
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to mark invoice paid.' });
+    const msg = err instanceof Error ? err.message : 'Failed to mark invoice as paid.';
+    console.error('Mark paid error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
@@ -455,7 +553,9 @@ apiRouter.post('/invoices/:id/pause', requireAuth, requireOrgMember, async (req:
     const paused = await pauseInvoice(req.organizationId!, req.params.id);
     return res.json(paused);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to pause invoice reminders.' });
+    const msg = err instanceof Error ? err.message : 'Failed to pause reminders.';
+    console.error('Pause invoice error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
@@ -464,73 +564,64 @@ apiRouter.post('/invoices/:id/resume', requireAuth, requireOrgMember, async (req
     const resumed = await resumeInvoice(req.organizationId!, req.params.id);
     return res.json(resumed);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to resume invoice reminders.' });
+    const msg = err instanceof Error ? err.message : 'Failed to resume reminders.';
+    console.error('Resume invoice error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 apiRouter.post('/invoices/:id/dispute', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    const disputed = await disputeInvoice(req.organizationId!, req.params.id);
-    return res.json(disputed);
+    const { disputed } = req.body;
+    const result = await disputeInvoice(req.organizationId!, req.params.id, disputed !== false);
+    return res.json(result);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to dispute invoice.' });
-  }
-});
-
-apiRouter.post('/invoices/import-sheets', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
-  try {
-    const { invoices } = req.body;
-    if (!Array.isArray(invoices) || invoices.length === 0) {
-      return res.status(400).json({ error: 'Valid invoice array is required.' });
-    }
-
-    const createdInvoices = [];
-    for (const item of invoices) {
-      const inv = await createInvoice(req.organizationId!, {
-        clientId: item.clientId || 'cli_imported',
-        clientName: item.clientName || 'Imported Client',
-        clientEmail: item.clientEmail || 'client@example.com',
-        companyName: item.companyName || item.clientName || 'Client Org',
-        invoiceNumber: item.invoiceNumber || `INV-${Date.now().toString().slice(-4)}`,
-        invoiceAmount: Number(item.invoiceAmount || 0),
-        currency: item.currency || 'INR',
-        invoiceDate: item.invoiceDate || new Date().toISOString().substring(0, 10),
-        dueDate: item.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().substring(0, 10),
-        status: item.status || 'DUE',
-        daysOverdue: Number(item.daysOverdue || 0),
-        source: 'GOOGLE_SHEETS',
-        sourceReference: item.sourceReference || 'sheets_sync',
-        isPaused: false,
-        reminderCount: 0,
-        extractionConfidence: 'HIGH',
-      });
-      createdInvoices.push(inv);
-    }
-
-    return res.status(201).json({ imported: createdInvoices.length, invoices: createdInvoices });
-  } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to import invoices.' });
+    const msg = err instanceof Error ? err.message : 'Failed to dispute invoice.';
+    console.error('Dispute invoice error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 /* -------------------------------------------------------------
-   REMINDERS API
+   REMINDERS API (Tenant Scoped & Safeguarded)
 ------------------------------------------------------------- */
 apiRouter.get('/reminders', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const reminders = await getReminders(req.organizationId!);
     return res.json(reminders);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to fetch reminders.' });
+    const msg = err instanceof Error ? err.message : 'Failed to fetch reminders.';
+    console.error('Reminders fetch error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 apiRouter.post('/reminders', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    const reminder = await createReminder(req.organizationId!, req.body);
+    const { invoiceId, clientId, sequenceNumber, scheduledAt, tone, subject, body } = req.body;
+    if (!invoiceId || !clientId || !subject || !body) {
+      return res.status(400).json({ error: 'Invoice, client, subject, and body are required.' });
+    }
+
+    const reminder = await createReminder(req.organizationId!, {
+      invoiceId,
+      clientId,
+      sequenceNumber: (Number(sequenceNumber || 1) as 1 | 2 | 3) || 1,
+      scheduledAt: scheduledAt || new Date(Date.now() + 86400000).toISOString(),
+      status: 'SCHEDULED',
+      tone: tone || 'PROFESSIONAL',
+      subject,
+      body,
+      aiGenerated: true,
+      approvedByUser: false,
+      requiresReview: true,
+    });
+
     return res.status(201).json(reminder);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to create reminder.' });
+    const msg = err instanceof Error ? err.message : 'Failed to create reminder.';
+    console.error('Reminder creation error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
@@ -539,41 +630,56 @@ apiRouter.patch('/reminders/:id', requireAuth, requireOrgMember, async (req: Aut
     const updated = await updateReminder(req.organizationId!, req.params.id, req.body);
     return res.json(updated);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to update reminder.' });
+    const msg = err instanceof Error ? err.message : 'Failed to update reminder draft.';
+    console.error('Reminder update error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
-apiRouter.post('/reminders/:id/approve-and-send', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+apiRouter.post('/reminders/:id/approve', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    const result = await approveAndSendReminder(
-      req.organizationId!,
-      req.params.id,
-      req.user!.email
-    );
-    return res.json(result);
+    const senderEmail = req.user?.email || 'accounts@yourbusiness.com';
+    const sent = await approveAndSendReminder(req.organizationId!, req.params.id, senderEmail);
+
+    await createAuditLog(req.organizationId!, {
+      userId: req.user!.id,
+      eventType: 'REMINDER_SENT',
+      entityType: 'REMINDER',
+      entityId: sent.id,
+      message: `Approved and sent payment reminder (Sequence #${sent.sequenceNumber}) for invoice ${sent.invoiceId}.`,
+    });
+
+    return res.json(sent);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to approve and send reminder.' });
+    const msg = err instanceof Error ? err.message : 'Failed to send reminder.';
+    console.error('Approve reminder error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 apiRouter.post('/reminders/:id/cancel', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    const cancelled = await cancelReminder(req.organizationId!, req.params.id);
+    const { reason } = req.body;
+    const cancelled = await cancelReminder(req.organizationId!, req.params.id, reason || 'Cancelled by user');
     return res.json(cancelled);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to cancel reminder.' });
+    const msg = err instanceof Error ? err.message : 'Failed to cancel reminder.';
+    console.error('Cancel reminder error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 /* -------------------------------------------------------------
-   EVENTS & AUDIT LOGS
+   EVENTS, LOGS & CONNECTIONS (Tenant Scoped)
 ------------------------------------------------------------- */
 apiRouter.get('/email-events', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const events = await getEmailEvents(req.organizationId!);
     return res.json(events);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to fetch email events.' });
+    const msg = err instanceof Error ? err.message : 'Failed to fetch email events.';
+    console.error('Email events fetch error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
@@ -582,83 +688,104 @@ apiRouter.get('/audit-logs', requireAuth, requireOrgMember, async (req: Authenti
     const logs = await getAuditLogs(req.organizationId!);
     return res.json(logs);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to fetch audit logs.' });
+    const msg = err instanceof Error ? err.message : 'Failed to fetch audit logs.';
+    console.error('Audit logs fetch error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
-/* -------------------------------------------------------------
-   CONNECTIONS & INTEGRATIONS
-------------------------------------------------------------- */
 apiRouter.get('/connections', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    const conns = await getConnections(req.organizationId!);
-    return res.json(conns);
+    const connections = await getConnections(req.organizationId!);
+    return res.json(connections);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to fetch connections.' });
+    const msg = err instanceof Error ? err.message : 'Failed to fetch connections.';
+    console.error('Connections fetch error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
-apiRouter.post('/connections/connect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+apiRouter.post('/connections/:provider/connect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    const { provider, accountIdentifier, sheetMetadata } = req.body;
-    if (!provider) return res.status(400).json({ error: 'Provider is required.' });
+    const provider = req.params.provider.toUpperCase() as 'GMAIL' | 'GOOGLE_SHEETS';
+    const { accountIdentifier, scopes } = req.body;
 
-    const conn = await upsertConnection(req.organizationId!, provider, {
+    const connection = await upsertConnection(req.organizationId!, provider, {
       status: 'CONNECTED',
-      accountIdentifier: accountIdentifier || req.user!.email,
-      sheetMetadata,
+      accountIdentifier: accountIdentifier || `${provider.toLowerCase()}-user@gmail.com`,
+      scopes: scopes || ['https://www.googleapis.com/auth/userinfo.email'],
     });
-    return res.json(conn);
+
+    await createAuditLog(req.organizationId!, {
+      userId: req.user!.id,
+      eventType: 'INTEGRATION_CONNECTED',
+      entityType: 'INTEGRATION',
+      entityId: connection.id,
+      message: `Connected ${provider} integration account (${connection.accountIdentifier}).`,
+    });
+
+    return res.json(connection);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to connect integration.' });
+    const msg = err instanceof Error ? err.message : 'Failed to connect integration.';
+    console.error('Connection error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 apiRouter.post('/connections/:provider/disconnect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const provider = req.params.provider.toUpperCase() as 'GMAIL' | 'GOOGLE_SHEETS';
-    const conn = await disconnectConnection(req.organizationId!, provider);
-    return res.json(conn);
-  } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to disconnect integration.' });
-  }
-});
-
-apiRouter.post('/connections/sync', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
-  try {
-    // Record sync timestamp on all active connections
-    const conns = await getConnections(req.organizationId!);
-    for (const c of conns) {
-      if (c.status === 'CONNECTED') {
-        await upsertConnection(req.organizationId!, c.provider, {
-          lastSyncAt: new Date().toISOString(),
-        });
-      }
-    }
+    const disconnected = await disconnectConnection(req.organizationId!, provider);
 
     await createAuditLog(req.organizationId!, {
       userId: req.user!.id,
-      eventType: 'MANUAL_SYNC_TRIGGERED',
-      entityType: 'CONNECTION',
-      entityId: 'sync_all',
-      message: 'Triggered manual sync for Gmail and Google Sheets integrations.',
+      eventType: 'INTEGRATION_DISCONNECTED',
+      entityType: 'INTEGRATION',
+      entityId: disconnected.id,
+      message: `Disconnected ${provider} integration account.`,
     });
 
-    return res.json({ success: true, timestamp: new Date().toISOString() });
+    return res.json(disconnected);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to trigger sync.' });
+    const msg = err instanceof Error ? err.message : 'Failed to disconnect integration.';
+    console.error('Disconnect error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
 /* -------------------------------------------------------------
-   SETTINGS & BILLING & NOTIFICATIONS
+   SETTINGS & BILLING (Tenant Scoped)
 ------------------------------------------------------------- */
+apiRouter.get('/settings/automation', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  try {
+    const settings = await getAutomationSettings(req.organizationId!);
+    return res.json(settings);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Failed to fetch automation settings.';
+    console.error('Automation settings fetch error:', msg);
+    return res.status(500).json({ error: msg });
+  }
+});
+
 apiRouter.patch('/settings/automation', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const updated = await updateAutomationSettings(req.organizationId!, req.body);
     return res.json(updated);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to update automation settings.' });
+    const msg = err instanceof Error ? err.message : 'Failed to update automation settings.';
+    console.error('Automation settings update error:', msg);
+    return res.status(500).json({ error: msg });
+  }
+});
+
+apiRouter.get('/settings/ai', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  try {
+    const settings = await getAISettings(req.organizationId!);
+    return res.json(settings);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Failed to fetch AI settings.';
+    console.error('AI settings fetch error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
@@ -667,44 +794,67 @@ apiRouter.patch('/settings/ai', requireAuth, requireOrgMember, async (req: Authe
     const updated = await updateAISettings(req.organizationId!, req.body);
     return res.json(updated);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to update AI settings.' });
+    const msg = err instanceof Error ? err.message : 'Failed to update AI settings.';
+    console.error('AI settings update error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
-apiRouter.post('/billing/upgrade-plan', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+apiRouter.post('/billing/upgrade', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const { plan } = req.body;
-    if (!plan) return res.status(400).json({ error: 'Subscription plan is required.' });
-    const sub = await updateSubscriptionPlan(req.organizationId!, plan);
-    return res.json(sub);
+    if (!plan) return res.status(400).json({ error: 'Plan is required.' });
+
+    const updated = await updateSubscriptionPlan(req.organizationId!, plan);
+
+    await createAuditLog(req.organizationId!, {
+      userId: req.user!.id,
+      eventType: 'SUBSCRIPTION_UPGRADED',
+      entityType: 'SUBSCRIPTION',
+      entityId: updated.id,
+      message: `Upgraded subscription tier to ${plan}.`,
+    });
+
+    return res.json(updated);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to update subscription.' });
+    const msg = err instanceof Error ? err.message : 'Failed to update subscription.';
+    console.error('Upgrade plan error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
+/* -------------------------------------------------------------
+   NOTIFICATIONS API (Tenant Scoped)
+------------------------------------------------------------- */
 apiRouter.get('/notifications', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    const notifs = await getNotifications(req.organizationId!);
-    return res.json(notifs);
+    const notifications = await getNotifications(req.organizationId!);
+    return res.json(notifications);
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to fetch notifications.' });
+    const msg = err instanceof Error ? err.message : 'Failed to fetch notifications.';
+    console.error('Notifications fetch error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
-apiRouter.patch('/notifications/:id/read', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+apiRouter.post('/notifications/:id/read', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     await markNotificationRead(req.organizationId!, req.params.id);
     return res.json({ success: true });
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to mark notification read.' });
+    const msg = err instanceof Error ? err.message : 'Failed to mark notification as read.';
+    console.error('Mark read error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });
 
-apiRouter.post('/notifications/read-all', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+apiRouter.post('/notifications/mark-all-read', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     await markAllNotificationsRead(req.organizationId!);
     return res.json({ success: true });
   } catch (err: unknown) {
-    return res.status(500).json({ error: 'Failed to mark all notifications read.' });
+    const msg = err instanceof Error ? err.message : 'Failed to mark all notifications as read.';
+    console.error('Mark all read error:', msg);
+    return res.status(500).json({ error: msg });
   }
 });

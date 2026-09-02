@@ -34,21 +34,21 @@ const STORAGE_KEYS = {
 };
 
 export const INITIAL_USER: User = {
-  id: 'usr_owner_01',
-  email: 'sainianupam07@gmail.com',
-  name: 'Anupam Saini',
-  avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+  id: '',
+  email: '',
+  name: 'User',
+  avatarUrl: 'https://api.dicebear.com/7.x/initials/svg?seed=User',
 };
 
 export const INITIAL_ORG: Organization = {
-  id: 'org_apex_studio',
-  name: 'Apex Design & Tech Studio',
-  slug: 'apex-design',
-  ownerUserId: 'usr_owner_01',
+  id: '',
+  name: 'My Workspace',
+  slug: 'my-workspace',
+  ownerUserId: '',
   timezone: 'Asia/Kolkata',
   currency: 'INR',
-  createdAt: '2026-07-01T10:00:00Z',
-  updatedAt: '2026-08-28T15:30:00Z',
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
 };
 
 export const INITIAL_CLIENTS: Client[] = [

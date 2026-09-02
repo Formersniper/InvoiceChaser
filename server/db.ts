@@ -1,5 +1,4 @@
-import { createClient as createSupabaseClient, SupabaseClient } from '@supabase/supabase-js';
-import bcrypt from 'bcryptjs';
+import { getSupabase } from './supabase';
 import {
   User,
   Organization,
@@ -18,124 +17,10 @@ import {
   SubscriptionPlan,
   PlanLimits,
 } from '../src/types';
-import {
-  INITIAL_USER,
-  INITIAL_ORG,
-  INITIAL_CLIENTS,
-  INITIAL_INVOICES,
-  INITIAL_REMINDERS,
-  INITIAL_EMAIL_EVENTS,
-  INITIAL_AUDIT_LOGS,
-  INITIAL_CONNECTIONS,
-  INITIAL_AUTOMATION_SETTINGS,
-  INITIAL_AI_SETTINGS,
-  INITIAL_SUBSCRIPTION,
-  INITIAL_USAGE,
-  INITIAL_NOTIFICATIONS,
-} from '../src/utils/storage';
 
-// Supabase lazy client configuration
-let supabaseInstance: SupabaseClient | null = null;
-
-export function getSupabaseClient(): SupabaseClient | null {
-  if (supabaseInstance) return supabaseInstance;
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-  if (url && key) {
-    try {
-      supabaseInstance = createSupabaseClient(url, key, {
-        auth: { persistSession: false },
-      });
-      console.log('Connected to remote Supabase instance at', url);
-    } catch (err) {
-      console.error('Failed to initialize Supabase client:', err);
-    }
-  }
-  return supabaseInstance;
-}
-
-// User Record with Password Hash
-export interface UserRecord extends User {
-  passwordHash?: string;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-// Memory database tables for seamless standalone & fallback operation
-interface MemoryDB {
-  users: Map<string, UserRecord>;
-  organizations: Map<string, Organization>;
-  memberships: Map<string, Membership>;
-  clients: Map<string, Client>;
-  invoices: Map<string, Invoice>;
-  reminders: Map<string, Reminder>;
-  emailEvents: Map<string, EmailEvent>;
-  auditLogs: Map<string, AuditLog>;
-  connections: Map<string, Connection>;
-  automationSettings: Map<string, AutomationSettings>;
-  aiSettings: Map<string, AISettings>;
-  subscriptions: Map<string, Subscription>;
-  usage: Map<string, Usage>;
-  notifications: Map<string, NotificationItem>;
-}
-
-const db: MemoryDB = {
-  users: new Map(),
-  organizations: new Map(),
-  memberships: new Map(),
-  clients: new Map(),
-  invoices: new Map(),
-  reminders: new Map(),
-  emailEvents: new Map(),
-  auditLogs: new Map(),
-  connections: new Map(),
-  automationSettings: new Map(),
-  aiSettings: new Map(),
-  subscriptions: new Map(),
-  usage: new Map(),
-  notifications: new Map(),
-};
-
-// Seed initial demo data for instant out-of-the-box experience
-let isSeeded = false;
-export async function seedInitialDataIfNeeded() {
-  if (isSeeded) return;
-  isSeeded = true;
-
-  const defaultHash = await bcrypt.hash('password123', 10);
-  const demoUser: UserRecord = {
-    ...INITIAL_USER,
-    passwordHash: defaultHash,
-    createdAt: '2026-07-01T10:00:00Z',
-    updatedAt: '2026-08-28T15:30:00Z',
-  };
-
-  db.users.set(demoUser.id, demoUser);
-  db.organizations.set(INITIAL_ORG.id, INITIAL_ORG);
-
-  const demoMembership: Membership = {
-    id: `mem_${demoUser.id}_${INITIAL_ORG.id}`,
-    organizationId: INITIAL_ORG.id,
-    userId: demoUser.id,
-    role: 'owner',
-    createdAt: '2026-07-01T10:00:00Z',
-  };
-  db.memberships.set(demoMembership.id, demoMembership);
-
-  INITIAL_CLIENTS.forEach((c) => db.clients.set(c.id, { ...c }));
-  INITIAL_INVOICES.forEach((i) => db.invoices.set(i.id, { ...i }));
-  INITIAL_REMINDERS.forEach((r) => db.reminders.set(r.id, { ...r }));
-  INITIAL_EMAIL_EVENTS.forEach((e) => db.emailEvents.set(e.id, { ...e }));
-  INITIAL_AUDIT_LOGS.forEach((a) => db.auditLogs.set(a.id, { ...a }));
-  INITIAL_CONNECTIONS.forEach((c) => db.connections.set(`${c.organizationId}_${c.provider}`, { ...c }));
-  db.automationSettings.set(INITIAL_AUTOMATION_SETTINGS.organizationId, { ...INITIAL_AUTOMATION_SETTINGS });
-  db.aiSettings.set(INITIAL_AI_SETTINGS.organizationId, { ...INITIAL_AI_SETTINGS });
-  db.subscriptions.set(INITIAL_SUBSCRIPTION.organizationId, { ...INITIAL_SUBSCRIPTION });
-  db.usage.set(INITIAL_USAGE.organizationId, { ...INITIAL_USAGE });
-  INITIAL_NOTIFICATIONS.forEach((n) => db.notifications.set(n.id, { ...n }));
-}
-
-// Plan Limits Generator
+// ============================================================================
+// PLAN LIMITS HELPER
+// ============================================================================
 export function getPlanLimits(plan: SubscriptionPlan): PlanLimits {
   switch (plan) {
     case 'FREE':
@@ -181,753 +66,1178 @@ export function getPlanLimits(plan: SubscriptionPlan): PlanLimits {
   }
 }
 
-/* -------------------------------------------------------------
-   USERS & AUTH OPERATIONS
-------------------------------------------------------------- */
-export async function findUserByEmail(email: string): Promise<UserRecord | null> {
-  await seedInitialDataIfNeeded();
-  const normalized = email.trim().toLowerCase();
-  for (const u of db.users.values()) {
-    if (u.email.toLowerCase() === normalized) {
-      return u;
-    }
-  }
-  return null;
+// ============================================================================
+// ROW MAPPER HELPERS (PostgreSQL snake_case <-> TypeScript camelCase)
+// ============================================================================
+function mapUser(row: any): User {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    avatarUrl: row.avatar_url || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(row.name)}`,
+  };
 }
 
-export async function findUserById(id: string): Promise<UserRecord | null> {
-  await seedInitialDataIfNeeded();
-  return db.users.get(id) || null;
+function mapOrganization(row: any): Organization {
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    ownerUserId: row.owner_user_id,
+    timezone: row.timezone || 'Asia/Kolkata',
+    currency: row.currency || 'INR',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
-export async function createUser(params: {
-  email: string;
-  name: string;
-  password: string;
-  avatarUrl?: string;
-}): Promise<UserRecord> {
-  await seedInitialDataIfNeeded();
-  const normalized = params.email.trim().toLowerCase();
-  const existing = await findUserByEmail(normalized);
-  if (existing) {
-    throw new Error('User already exists with this email.');
-  }
-
-  const id = `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const passwordHash = await bcrypt.hash(params.password, 10);
-  const user: UserRecord = {
-    id,
-    email: normalized,
-    name: params.name.trim(),
-    avatarUrl:
-      params.avatarUrl ||
-      `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(params.name)}`,
-    passwordHash,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+function mapMembership(row: any): Membership {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    userId: row.user_id,
+    role: row.role || 'owner',
+    createdAt: row.created_at,
   };
-
-  db.users.set(id, user);
-  return user;
 }
 
-export async function updateUserProfile(
-  userId: string,
-  data: Partial<Pick<User, 'name' | 'avatarUrl'>>
-): Promise<UserRecord> {
-  const user = await findUserById(userId);
-  if (!user) throw new Error('User not found.');
-  const updated: UserRecord = {
-    ...user,
-    ...data,
-    updatedAt: new Date().toISOString(),
+function mapClient(row: any): Client {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    name: row.name,
+    email: row.email,
+    companyName: row.company_name,
+    relationshipType: row.relationship_type || 'REGULAR',
+    paymentReliabilityScore: Number(row.payment_reliability_score ?? 85),
+    averagePaymentDelayDays: Number(row.average_payment_delay_days ?? 0),
+    totalInvoiced: Number(row.total_invoiced ?? 0),
+    totalPaid: Number(row.total_paid ?? 0),
+    totalOutstanding: Number(row.total_outstanding ?? 0),
+    neverContact: Boolean(row.never_contact),
+    notes: row.notes || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
-  db.users.set(userId, updated);
-  return updated;
 }
 
-/* -------------------------------------------------------------
-   ORGANIZATIONS & MEMBERSHIPS (Multi-Tenancy)
-------------------------------------------------------------- */
-export async function createOrganizationForUser(
-  user: UserRecord,
-  companyName: string
-): Promise<{ organization: Organization; membership: Membership }> {
-  await seedInitialDataIfNeeded();
-  const orgId = `org_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const slug = companyName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/(^-|-$)/g, '');
-
-  const org: Organization = {
-    id: orgId,
-    name: companyName.trim() || `${user.name}'s Studio`,
-    slug: slug || `org-${Date.now()}`,
-    ownerUserId: user.id,
-    timezone: 'Asia/Kolkata',
-    currency: 'INR',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+function mapInvoice(row: any): Invoice {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    clientId: row.client_id || '',
+    clientName: row.client_name,
+    clientEmail: row.client_email,
+    companyName: row.company_name || undefined,
+    invoiceNumber: row.invoice_number,
+    invoiceAmount: Number(row.invoice_amount),
+    currency: row.currency || 'INR',
+    invoiceDate: row.invoice_date,
+    dueDate: row.due_date,
+    status: row.status,
+    daysOverdue: Number(row.days_overdue ?? 0),
+    source: row.source || 'MANUAL',
+    sourceReference: row.source_reference || undefined,
+    lastReminderAt: row.last_reminder_at || undefined,
+    reminderCount: Number(row.reminder_count ?? 0),
+    nextReminderAt: row.next_reminder_at || undefined,
+    paymentReceivedAt: row.payment_received_at || undefined,
+    isPaused: Boolean(row.is_paused),
+    extractionConfidence: row.extraction_confidence || 'HIGH',
+    notes: row.notes || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
-  db.organizations.set(orgId, org);
+}
 
-  const membershipId = `mem_${user.id}_${orgId}`;
-  const membership: Membership = {
-    id: membershipId,
-    organizationId: orgId,
-    userId: user.id,
-    role: 'owner',
-    createdAt: new Date().toISOString(),
+function mapReminder(row: any): Reminder {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    invoiceId: row.invoice_id,
+    clientId: row.client_id,
+    sequenceNumber: (Number(row.sequence_number) as 1 | 2 | 3) || 1,
+    scheduledAt: row.scheduled_at,
+    sentAt: row.sent_at || undefined,
+    status: row.status,
+    tone: row.tone || 'PROFESSIONAL',
+    subject: row.subject,
+    body: row.body,
+    gmailMessageId: row.gmail_message_id || undefined,
+    aiGenerated: Boolean(row.ai_generated),
+    approvedByUser: Boolean(row.approved_by_user),
+    requiresReview: Boolean(row.requires_review),
+    lastError: row.last_error || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
-  db.memberships.set(membershipId, membership);
+}
 
-  // Initialize tenant default configs (empty invoices/clients for new user)
-  const defaultAutomation: AutomationSettings = {
-    id: `auto_${orgId}`,
-    organizationId: orgId,
-    automaticReminders: true,
-    automaticallyStopWhenPaid: true,
-    avoidWeekends: true,
-    preferredSendingTime: '10:00',
-    timezone: org.timezone,
-    policyTier: 'STANDARD',
-    policyIntervals: {
+function mapEmailEvent(row: any): EmailEvent {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    invoiceId: row.invoice_id || undefined,
+    clientId: row.client_id || undefined,
+    gmailMessageId: row.gmail_message_id || undefined,
+    threadId: row.thread_id || undefined,
+    direction: row.direction || 'OUTBOUND',
+    eventType: row.event_type,
+    subject: row.subject,
+    sender: row.sender,
+    recipient: row.recipient,
+    bodyPreview: row.body_preview || undefined,
+    eventTimestamp: row.event_timestamp || row.created_at,
+    metadata: row.metadata || undefined,
+    createdAt: row.created_at,
+  };
+}
+
+function mapAuditLog(row: any): AuditLog {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    userId: row.user_id || undefined,
+    eventType: row.event_type,
+    entityType: row.entity_type,
+    entityId: row.entity_id,
+    message: row.message,
+    createdAt: row.created_at,
+    metadata: row.metadata || undefined,
+  };
+}
+
+function mapConnection(row: any): Connection {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    provider: row.provider,
+    status: row.status,
+    accountIdentifier: row.account_identifier,
+    scopes: Array.isArray(row.scopes) ? row.scopes : [],
+    lastSyncAt: row.last_sync_at || undefined,
+    lastError: row.last_error || undefined,
+    sheetMetadata: row.sheet_metadata || undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapAutomationSettings(row: any): AutomationSettings {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    automaticReminders: Boolean(row.automatic_reminders),
+    automaticallyStopWhenPaid: Boolean(row.automatically_stop_when_paid),
+    avoidWeekends: Boolean(row.avoid_weekends),
+    preferredSendingTime: row.preferred_sending_time || '10:00',
+    timezone: row.timezone || 'Asia/Kolkata',
+    policyTier: row.policy_tier || 'STANDARD',
+    policyIntervals: row.policy_intervals || {
       firstReminderDays: 3,
       secondReminderDays: 10,
       finalReminderDays: 17,
     },
-    maxReminders: 3,
+    maxReminders: Number(row.max_reminders ?? 3),
   };
-  db.automationSettings.set(orgId, defaultAutomation);
+}
 
-  const defaultAI: AISettings = {
-    id: `ai_${orgId}`,
-    organizationId: orgId,
-    communicationStyle: 'PROFESSIONAL',
-    relationshipAwarePersonalization: true,
-    reviewBeforeSending: true,
-    customToneInstructions: 'Maintain calm, cordial, and strictly professional communication.',
+function mapAISettings(row: any): AISettings {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    communicationStyle: row.communication_style || 'PROFESSIONAL',
+    relationshipAwarePersonalization: Boolean(row.relationship_aware_personalization),
+    reviewBeforeSending: Boolean(row.review_before_sending),
+    customToneInstructions: row.custom_tone_instructions || undefined,
   };
-  db.aiSettings.set(orgId, defaultAI);
+}
 
-  const defaultSub: Subscription = {
-    id: `sub_${orgId}`,
-    organizationId: orgId,
-    plan: 'FREE',
-    status: 'ACTIVE',
-    currentPeriodStart: new Date().toISOString(),
-    currentPeriodEnd: new Date(Date.now() + 30 * 86400000).toISOString(),
-    cancelAtPeriodEnd: false,
-    limits: getPlanLimits('FREE'),
+function mapSubscription(row: any): Subscription {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    plan: row.plan || 'FREE',
+    status: row.status || 'ACTIVE',
+    currentPeriodStart: row.current_period_start || new Date().toISOString(),
+    currentPeriodEnd: row.current_period_end || new Date(Date.now() + 30 * 86400000).toISOString(),
+    cancelAtPeriodEnd: Boolean(row.cancel_at_period_end),
+    limits: row.limits || getPlanLimits(row.plan || 'FREE'),
   };
-  db.subscriptions.set(orgId, defaultSub);
+}
 
-  const defaultUsage: Usage = {
-    organizationId: orgId,
-    month: new Date().toISOString().substring(0, 7),
-    activeInvoicesCount: 0,
-    remindersSentCount: 0,
-    aiGenerationsCount: 0,
-    connectedGmailAccounts: 0,
+function mapUsage(row: any): Usage {
+  return {
+    organizationId: row.organization_id,
+    month: row.month,
+    activeInvoicesCount: Number(row.active_invoices_count ?? 0),
+    remindersSentCount: Number(row.reminders_sent_count ?? 0),
+    aiGenerationsCount: Number(row.ai_generations_count ?? 0),
+    connectedGmailAccounts: Number(row.connected_gmail_accounts ?? 0),
   };
-  db.usage.set(orgId, defaultUsage);
+}
 
-  // Welcome notification
-  const welcomeNotif: NotificationItem = {
-    id: `notif_${Date.now()}`,
-    organizationId: orgId,
-    type: 'INFO',
-    title: 'Workspace Initialized',
-    message: `Welcome to InvoiceChaser! Your accounts receivable engine for ${org.name} is ready.`,
-    actionUrl: '/app/dashboard',
-    read: false,
-    createdAt: new Date().toISOString(),
+function mapNotification(row: any): NotificationItem {
+  return {
+    id: row.id,
+    organizationId: row.organization_id,
+    type: row.type || 'INFO',
+    title: row.title,
+    message: row.message,
+    actionUrl: row.action_url || undefined,
+    read: Boolean(row.read),
+    createdAt: row.created_at,
   };
-  db.notifications.set(welcomeNotif.id, welcomeNotif);
+}
 
-  // Audit log
-  await createAuditLog(orgId, {
-    userId: user.id,
-    eventType: 'WORKSPACE_CREATED',
-    entityType: 'SETTINGS',
-    entityId: orgId,
-    message: `Created workspace ${org.name} for ${user.email}.`,
+// ============================================================================
+// USERS OPERATIONS (Authoritative Supabase PostgreSQL)
+// ============================================================================
+export async function findUserById(id: string): Promise<User | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (error || !data) return null;
+  return mapUser(data);
+}
+
+export async function findUserByEmail(email: string): Promise<User | null> {
+  const supabase = getSupabase();
+  const normalized = email.trim().toLowerCase();
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('email', normalized)
+    .single();
+
+  if (error || !data) return null;
+  return mapUser(data);
+}
+
+export async function upsertUserRecord(params: {
+  id: string;
+  email: string;
+  name: string;
+  avatarUrl?: string;
+}): Promise<User> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('users')
+    .upsert(
+      {
+        id: params.id,
+        email: params.email.trim().toLowerCase(),
+        name: params.name.trim(),
+        avatar_url:
+          params.avatarUrl ||
+          `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(params.name.trim())}`,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'id' }
+    )
+    .select('*')
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to save user profile: ${error.message}`);
+  }
+  return mapUser(data);
+}
+
+export async function updateUserProfile(
+  userId: string,
+  updates: Partial<Pick<User, 'name' | 'avatarUrl'>>
+): Promise<User> {
+  const supabase = getSupabase();
+  const updatePayload: Record<string, any> = {
+    updated_at: new Date().toISOString(),
+  };
+
+  if (updates.name !== undefined) updatePayload.name = updates.name.trim();
+  if (updates.avatarUrl !== undefined) updatePayload.avatar_url = updates.avatarUrl;
+
+  const { data, error } = await supabase
+    .from('users')
+    .update(updatePayload)
+    .eq('id', userId)
+    .select('*')
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to update profile: ${error.message}`);
+  }
+  return mapUser(data);
+}
+
+// ============================================================================
+// ORGANIZATIONS & MEMBERSHIPS (Multi-Tenancy)
+// ============================================================================
+export async function createOrganizationForUser(
+  user: User,
+  name: string
+): Promise<{ organization: Organization; membership: Membership }> {
+  const supabase = getSupabase();
+  const slug = `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Math.random().toString(36).substring(2, 6)}`;
+
+  // 1. Insert organization
+  const { data: orgData, error: orgError } = await supabase
+    .from('organizations')
+    .insert({
+      name: name.trim(),
+      slug,
+      owner_user_id: user.id,
+      timezone: 'Asia/Kolkata',
+      currency: 'INR',
+    })
+    .select('*')
+    .single();
+
+  if (orgError || !orgData) {
+    throw new Error(`Failed to create organization: ${orgError?.message}`);
+  }
+
+  const organization = mapOrganization(orgData);
+
+  // 2. Insert owner membership
+  const { data: memData, error: memError } = await supabase
+    .from('memberships')
+    .insert({
+      organization_id: organization.id,
+      user_id: user.id,
+      role: 'owner',
+    })
+    .select('*')
+    .single();
+
+  if (memError || !memData) {
+    throw new Error(`Failed to create organization membership: ${memError?.message}`);
+  }
+
+  const membership = mapMembership(memData);
+
+  // 3. Initialize default automation settings
+  await supabase.from('automation_settings').upsert({
+    organization_id: organization.id,
+    automatic_reminders: true,
+    automatically_stop_when_paid: true,
+    avoid_weekends: true,
+    preferred_sending_time: '10:00',
+    timezone: 'Asia/Kolkata',
+    policy_tier: 'STANDARD',
+    policy_intervals: {
+      firstReminderDays: 3,
+      secondReminderDays: 10,
+      finalReminderDays: 17,
+    },
+    max_reminders: 3,
   });
 
-  return { organization: org, membership };
+  // 4. Initialize default AI settings
+  await supabase.from('ai_settings').upsert({
+    organization_id: organization.id,
+    communication_style: 'PROFESSIONAL',
+    relationship_aware_personalization: true,
+    review_before_sending: true,
+  });
+
+  // 5. Initialize FREE Subscription & Usage
+  const currentMonth = new Date().toISOString().substring(0, 7);
+  await supabase.from('subscriptions').upsert({
+    organization_id: organization.id,
+    plan: 'FREE',
+    status: 'ACTIVE',
+    limits: getPlanLimits('FREE'),
+  });
+
+  await supabase.from('usage').upsert(
+    {
+      organization_id: organization.id,
+      month: currentMonth,
+      active_invoices_count: 0,
+      reminders_sent_count: 0,
+      ai_generations_count: 0,
+      connected_gmail_accounts: 0,
+    },
+    { onConflict: 'organization_id,month' }
+  );
+
+  // 6. Create Welcome Notification & Audit Log
+  await supabase.from('notifications').insert({
+    organization_id: organization.id,
+    type: 'SUCCESS',
+    title: 'Welcome to InvoiceChaser AI',
+    message: `Your account for "${organization.name}" is ready. Connect your billing sources or add your first invoice to get started.`,
+  });
+
+  await supabase.from('audit_logs').insert({
+    organization_id: organization.id,
+    user_id: user.id,
+    event_type: 'ORGANIZATION_CREATED',
+    entity_type: 'ORGANIZATION',
+    entity_id: organization.id,
+    message: `Created organization "${organization.name}".`,
+  });
+
+  return { organization, membership };
+}
+
+export async function getOrganizationById(orgId: string): Promise<Organization | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('organizations')
+    .select('*')
+    .eq('id', orgId)
+    .single();
+
+  if (error || !data) return null;
+  return mapOrganization(data);
 }
 
 export async function getUserOrganizations(userId: string): Promise<Organization[]> {
-  await seedInitialDataIfNeeded();
-  const orgs: Organization[] = [];
-  for (const mem of db.memberships.values()) {
-    if (mem.userId === userId) {
-      const org = db.organizations.get(mem.organizationId);
-      if (org) orgs.push(org);
-    }
+  const supabase = getSupabase();
+  const { data: memberships, error: memError } = await supabase
+    .from('memberships')
+    .select('organization_id')
+    .eq('user_id', userId);
+
+  if (memError || !memberships || memberships.length === 0) {
+    return [];
   }
-  return orgs;
+
+  const orgIds = memberships.map((m) => m.organization_id);
+  const { data: orgs, error: orgError } = await supabase
+    .from('organizations')
+    .select('*')
+    .in('id', orgIds)
+    .order('created_at', { ascending: true });
+
+  if (orgError || !orgs) return [];
+  return orgs.map(mapOrganization);
 }
 
 export async function getUserMembership(
   userId: string,
-  organizationId: string
+  orgId: string
 ): Promise<Membership | null> {
-  await seedInitialDataIfNeeded();
-  for (const mem of db.memberships.values()) {
-    if (mem.userId === userId && mem.organizationId === organizationId) {
-      return mem;
-    }
-  }
-  return null;
-}
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('memberships')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('organization_id', orgId)
+    .single();
 
-export async function getOrganizationById(id: string): Promise<Organization | null> {
-  await seedInitialDataIfNeeded();
-  return db.organizations.get(id) || null;
+  if (error || !data) return null;
+  return mapMembership(data);
 }
 
 export async function updateOrganization(
   orgId: string,
-  data: Partial<Pick<Organization, 'name' | 'timezone' | 'currency'>>
+  updates: Partial<Pick<Organization, 'name' | 'timezone' | 'currency'>>
 ): Promise<Organization> {
-  const org = await getOrganizationById(orgId);
-  if (!org) throw new Error('Organization not found.');
-  const updated: Organization = {
-    ...org,
-    ...data,
-    updatedAt: new Date().toISOString(),
+  const supabase = getSupabase();
+  const payload: Record<string, any> = {
+    updated_at: new Date().toISOString(),
   };
-  db.organizations.set(orgId, updated);
-  return updated;
+  if (updates.name !== undefined) payload.name = updates.name.trim();
+  if (updates.timezone !== undefined) payload.timezone = updates.timezone;
+  if (updates.currency !== undefined) payload.currency = updates.currency;
+
+  const { data, error } = await supabase
+    .from('organizations')
+    .update(payload)
+    .eq('id', orgId)
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to update organization: ${error?.message}`);
+  }
+  return mapOrganization(data);
 }
 
-/* -------------------------------------------------------------
-   WORKSPACE SNAPSHOT
-------------------------------------------------------------- */
-export async function getWorkspaceSnapshot(userId: string, organizationId?: string) {
-  await seedInitialDataIfNeeded();
-  const orgs = await getUserOrganizations(userId);
-  if (orgs.length === 0) {
-    throw new Error('User has no organizations. Please create one.');
+// ============================================================================
+// WORKSPACE DATA SNAPSHOT (Tenant Scoped)
+// ============================================================================
+export async function getWorkspaceSnapshot(userId: string, orgId?: string) {
+  const user = await findUserById(userId);
+  if (!user) throw new Error('User not found.');
+
+  const organizations = await getUserOrganizations(userId);
+  let activeOrg = orgId ? organizations.find((o) => o.id === orgId) : organizations[0];
+
+  if (!activeOrg && organizations.length > 0) {
+    activeOrg = organizations[0];
   }
 
-  const selectedOrg = (organizationId && orgs.find((o) => o.id === organizationId)) || orgs[0];
-  const membership = await getUserMembership(userId, selectedOrg.id);
-  const automationSettings =
-    db.automationSettings.get(selectedOrg.id) ||
-    ({
-      id: `auto_${selectedOrg.id}`,
-      organizationId: selectedOrg.id,
-      automaticReminders: true,
-      automaticallyStopWhenPaid: true,
-      avoidWeekends: true,
-      preferredSendingTime: '10:00',
-      timezone: selectedOrg.timezone,
-      policyTier: 'STANDARD',
-      policyIntervals: { firstReminderDays: 3, secondReminderDays: 10, finalReminderDays: 17 },
-      maxReminders: 3,
-    } as AutomationSettings);
-
-  const aiSettings =
-    db.aiSettings.get(selectedOrg.id) ||
-    ({
-      id: `ai_${selectedOrg.id}`,
-      organizationId: selectedOrg.id,
-      communicationStyle: 'PROFESSIONAL',
-      relationshipAwarePersonalization: true,
-      reviewBeforeSending: true,
-      customToneInstructions: '',
-    } as AISettings);
-
-  const subscription =
-    db.subscriptions.get(selectedOrg.id) ||
-    ({
-      id: `sub_${selectedOrg.id}`,
-      organizationId: selectedOrg.id,
-      plan: 'FREE',
-      status: 'ACTIVE',
-      currentPeriodStart: new Date().toISOString(),
-      currentPeriodEnd: new Date(Date.now() + 30 * 86400000).toISOString(),
-      cancelAtPeriodEnd: false,
-      limits: getPlanLimits('FREE'),
-    } as Subscription);
-
-  const currentMonth = new Date().toISOString().substring(0, 7);
-  let usage = db.usage.get(selectedOrg.id);
-  if (!usage || usage.month !== currentMonth) {
-    const activeInvCount = Array.from(db.invoices.values()).filter(
-      (i) => i.organizationId === selectedOrg.id && i.status !== 'PAID' && i.status !== 'STOPPED'
-    ).length;
-    usage = {
-      organizationId: selectedOrg.id,
-      month: currentMonth,
-      activeInvoicesCount: activeInvCount,
-      remindersSentCount: usage ? usage.remindersSentCount : 0,
-      aiGenerationsCount: usage ? usage.aiGenerationsCount : 0,
-      connectedGmailAccounts: usage ? usage.connectedGmailAccounts : 0,
-    };
-    db.usage.set(selectedOrg.id, usage);
+  if (!activeOrg) {
+    // If no org exists yet for this user, create an initial workspace
+    const created = await createOrganizationForUser(user, `${user.name}'s Studio`);
+    activeOrg = created.organization;
+    organizations.push(activeOrg);
   }
 
-  return {
-    organization: selectedOrg,
-    organizations: orgs,
-    membership,
+  const resolvedOrgId = activeOrg.id;
+  const currentMembership = await getUserMembership(userId, resolvedOrgId);
+
+  // Fetch all tenant-scoped data in parallel
+  const [
+    clients,
+    invoices,
+    reminders,
+    emailEvents,
+    auditLogs,
+    connections,
     automationSettings,
     aiSettings,
     subscription,
     usage,
+    notifications,
+  ] = await Promise.all([
+    getClients(resolvedOrgId),
+    getInvoices(resolvedOrgId),
+    getReminders(resolvedOrgId),
+    getEmailEvents(resolvedOrgId),
+    getAuditLogs(resolvedOrgId),
+    getConnections(resolvedOrgId),
+    getAutomationSettings(resolvedOrgId),
+    getAISettings(resolvedOrgId),
+    getSubscription(resolvedOrgId),
+    getUsage(resolvedOrgId),
+    getNotifications(resolvedOrgId),
+  ]);
+
+  return {
+    organization: activeOrg,
+    membership: currentMembership,
+    organizations,
+    clients,
+    invoices,
+    reminders,
+    emailEvents,
+    auditLogs,
+    connections,
+    automationSettings,
+    aiSettings,
+    subscription,
+    usage,
+    notifications,
   };
 }
 
-/* -------------------------------------------------------------
-   CLIENTS OPERATIONS
-------------------------------------------------------------- */
+// ============================================================================
+// CLIENTS CRUD (Tenant Scoped)
+// ============================================================================
 export async function getClients(orgId: string): Promise<Client[]> {
-  await seedInitialDataIfNeeded();
-  return Array.from(db.clients.values()).filter((c) => c.organizationId === orgId);
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('clients')
+    .select('*')
+    .eq('organization_id', orgId)
+    .order('created_at', { ascending: false });
+
+  if (error || !data) return [];
+  return data.map(mapClient);
 }
 
-export async function getClientById(orgId: string, clientId: string): Promise<Client | null> {
-  await seedInitialDataIfNeeded();
-  const c = db.clients.get(clientId);
-  if (c && c.organizationId === orgId) return c;
-  return null;
+export async function getClientById(orgId: string, id: string): Promise<Client | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('clients')
+    .select('*')
+    .eq('organization_id', orgId)
+    .eq('id', id)
+    .single();
+
+  if (error || !data) return null;
+  return mapClient(data);
 }
 
 export async function createClient(
   orgId: string,
-  data: Omit<Client, 'id' | 'organizationId' | 'createdAt' | 'updatedAt'>
+  clientData: Omit<Client, 'id' | 'organizationId' | 'createdAt' | 'updatedAt'>
 ): Promise<Client> {
-  await seedInitialDataIfNeeded();
-  const id = `cli_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-  const client: Client = {
-    ...data,
-    id,
-    organizationId: orgId,
-    totalInvoiced: data.totalInvoiced || 0,
-    totalPaid: data.totalPaid || 0,
-    totalOutstanding: data.totalOutstanding || 0,
-    paymentReliabilityScore: data.paymentReliabilityScore ?? 85,
-    averagePaymentDelayDays: data.averagePaymentDelayDays ?? 0,
-    neverContact: !!data.neverContact,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  db.clients.set(id, client);
-  return client;
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('clients')
+    .insert({
+      organization_id: orgId,
+      name: clientData.name.trim(),
+      email: clientData.email.trim().toLowerCase(),
+      company_name: clientData.companyName.trim(),
+      relationship_type: clientData.relationshipType || 'REGULAR',
+      payment_reliability_score: clientData.paymentReliabilityScore ?? 85,
+      average_payment_delay_days: clientData.averagePaymentDelayDays ?? 0,
+      total_invoiced: clientData.totalInvoiced ?? 0,
+      total_paid: clientData.totalPaid ?? 0,
+      total_outstanding: clientData.totalOutstanding ?? 0,
+      never_contact: Boolean(clientData.neverContact),
+      notes: clientData.notes || null,
+    })
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to create client: ${error?.message}`);
+  }
+  return mapClient(data);
 }
 
 export async function updateClient(
   orgId: string,
-  clientId: string,
-  data: Partial<Client>
+  id: string,
+  updates: Partial<Client>
 ): Promise<Client> {
-  const client = await getClientById(orgId, clientId);
-  if (!client) throw new Error('Client not found.');
-  const updated: Client = {
-    ...client,
-    ...data,
-    updatedAt: new Date().toISOString(),
+  const supabase = getSupabase();
+  const payload: Record<string, any> = {
+    updated_at: new Date().toISOString(),
   };
-  db.clients.set(clientId, updated);
-  return updated;
-}
 
-export async function deleteClient(orgId: string, clientId: string): Promise<boolean> {
-  const client = await getClientById(orgId, clientId);
-  if (!client) return false;
-  db.clients.delete(clientId);
-  return true;
-}
+  if (updates.name !== undefined) payload.name = updates.name.trim();
+  if (updates.email !== undefined) payload.email = updates.email.trim().toLowerCase();
+  if (updates.companyName !== undefined) payload.company_name = updates.companyName.trim();
+  if (updates.relationshipType !== undefined) payload.relationship_type = updates.relationshipType;
+  if (updates.paymentReliabilityScore !== undefined) payload.payment_reliability_score = updates.paymentReliabilityScore;
+  if (updates.averagePaymentDelayDays !== undefined) payload.average_payment_delay_days = updates.averagePaymentDelayDays;
+  if (updates.totalInvoiced !== undefined) payload.total_invoiced = updates.totalInvoiced;
+  if (updates.totalPaid !== undefined) payload.total_paid = updates.totalPaid;
+  if (updates.totalOutstanding !== undefined) payload.total_outstanding = updates.totalOutstanding;
+  if (updates.neverContact !== undefined) payload.never_contact = updates.neverContact;
+  if (updates.notes !== undefined) payload.notes = updates.notes;
 
-export async function recalculateClientTotals(orgId: string, clientId: string) {
-  const client = await getClientById(orgId, clientId);
-  if (!client) return;
+  const { data, error } = await supabase
+    .from('clients')
+    .update(payload)
+    .eq('organization_id', orgId)
+    .eq('id', id)
+    .select('*')
+    .single();
 
-  const invoices = Array.from(db.invoices.values()).filter(
-    (i) => i.organizationId === orgId && i.clientId === clientId
-  );
-
-  let totalInvoiced = 0;
-  let totalPaid = 0;
-  let totalOutstanding = 0;
-
-  for (const inv of invoices) {
-    totalInvoiced += inv.invoiceAmount;
-    if (inv.status === 'PAID') {
-      totalPaid += inv.invoiceAmount;
-    } else {
-      totalOutstanding += inv.invoiceAmount;
-    }
+  if (error || !data) {
+    throw new Error(`Failed to update client: ${error?.message}`);
   }
-
-  client.totalInvoiced = totalInvoiced;
-  client.totalPaid = totalPaid;
-  client.totalOutstanding = totalOutstanding;
-  client.updatedAt = new Date().toISOString();
-  db.clients.set(clientId, client);
+  return mapClient(data);
 }
 
-/* -------------------------------------------------------------
-   INVOICES OPERATIONS
-------------------------------------------------------------- */
+export async function deleteClient(orgId: string, id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from('clients')
+    .delete()
+    .eq('organization_id', orgId)
+    .eq('id', id);
+
+  if (error) {
+    throw new Error(`Failed to delete client: ${error.message}`);
+  }
+}
+
+// ============================================================================
+// INVOICES CRUD (Tenant Scoped)
+// ============================================================================
 export async function getInvoices(orgId: string): Promise<Invoice[]> {
-  await seedInitialDataIfNeeded();
-  return Array.from(db.invoices.values()).filter((i) => i.organizationId === orgId);
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('invoices')
+    .select('*')
+    .eq('organization_id', orgId)
+    .order('created_at', { ascending: false });
+
+  if (error || !data) return [];
+  return data.map(mapInvoice);
 }
 
-export async function getInvoiceById(orgId: string, invoiceId: string): Promise<Invoice | null> {
-  await seedInitialDataIfNeeded();
-  const inv = db.invoices.get(invoiceId);
-  if (inv && inv.organizationId === orgId) return inv;
-  return null;
+export async function getInvoiceById(orgId: string, id: string): Promise<Invoice | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('invoices')
+    .select('*')
+    .eq('organization_id', orgId)
+    .eq('id', id)
+    .single();
+
+  if (error || !data) return null;
+  return mapInvoice(data);
 }
 
 export async function createInvoice(
   orgId: string,
-  data: Omit<Invoice, 'id' | 'organizationId' | 'createdAt' | 'updatedAt'>
+  invoiceData: Omit<Invoice, 'id' | 'organizationId' | 'createdAt' | 'updatedAt'>
 ): Promise<Invoice> {
-  await seedInitialDataIfNeeded();
-  const id = `inv_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-  const invoice: Invoice = {
-    ...data,
-    id,
-    organizationId: orgId,
-    isPaused: data.isPaused ?? false,
-    reminderCount: data.reminderCount ?? 0,
-    daysOverdue: data.daysOverdue ?? 0,
-    status: data.status || 'DUE',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  db.invoices.set(id, invoice);
+  const supabase = getSupabase();
 
-  // Recalculate client financial totals
-  if (invoice.clientId) {
-    await recalculateClientTotals(orgId, invoice.clientId);
+  // 1. Resolve or create client if clientId is missing
+  let clientId = invoiceData.clientId;
+  if (!clientId && invoiceData.clientEmail) {
+    const clients = await getClients(orgId);
+    const existingClient = clients.find(
+      (c) => c.email.toLowerCase() === invoiceData.clientEmail.toLowerCase()
+    );
+    if (existingClient) {
+      clientId = existingClient.id;
+    } else {
+      const newClient = await createClient(orgId, {
+        name: invoiceData.clientName,
+        email: invoiceData.clientEmail,
+        companyName: invoiceData.companyName || invoiceData.clientName,
+        relationshipType: 'REGULAR',
+        paymentReliabilityScore: 85,
+        averagePaymentDelayDays: 0,
+        totalInvoiced: invoiceData.invoiceAmount,
+        totalPaid: 0,
+        totalOutstanding: invoiceData.invoiceAmount,
+        neverContact: false,
+      });
+      clientId = newClient.id;
+    }
   }
 
-  // Record audit log
-  await createAuditLog(orgId, {
-    eventType: 'INVOICE_CREATED',
-    entityType: 'INVOICE',
-    entityId: id,
-    message: `Created invoice #${invoice.invoiceNumber} for ${invoice.clientName} (${invoice.currency} ${invoice.invoiceAmount.toLocaleString()}).`,
-  });
+  // 2. Insert invoice with organization uniqueness check
+  const { data, error } = await supabase
+    .from('invoices')
+    .insert({
+      organization_id: orgId,
+      client_id: clientId || null,
+      client_name: invoiceData.clientName,
+      client_email: invoiceData.clientEmail,
+      company_name: invoiceData.companyName || null,
+      invoice_number: invoiceData.invoiceNumber,
+      invoice_amount: invoiceData.invoiceAmount,
+      currency: invoiceData.currency || 'INR',
+      invoice_date: invoiceData.invoiceDate,
+      due_date: invoiceData.dueDate,
+      status: invoiceData.status || 'DUE',
+      days_overdue: invoiceData.daysOverdue ?? 0,
+      source: invoiceData.source || 'MANUAL',
+      source_reference: invoiceData.sourceReference || null,
+      last_reminder_at: invoiceData.lastReminderAt || null,
+      reminder_count: invoiceData.reminderCount ?? 0,
+      next_reminder_at: invoiceData.nextReminderAt || null,
+      payment_received_at: invoiceData.paymentReceivedAt || null,
+      is_paused: Boolean(invoiceData.isPaused),
+      extraction_confidence: invoiceData.extractionConfidence || 'HIGH',
+      notes: invoiceData.notes || null,
+    })
+    .select('*')
+    .single();
 
-  return invoice;
+  if (error || !data) {
+    throw new Error(`Failed to create invoice: ${error?.message}`);
+  }
+
+  const created = mapInvoice(data);
+
+  // Update client financial statistics
+  if (clientId) {
+    const client = await getClientById(orgId, clientId);
+    if (client) {
+      await updateClient(orgId, clientId, {
+        totalInvoiced: (client.totalInvoiced || 0) + invoiceData.invoiceAmount,
+        totalOutstanding: (client.totalOutstanding || 0) + invoiceData.invoiceAmount,
+      });
+    }
+  }
+
+  return created;
 }
 
 export async function updateInvoice(
   orgId: string,
-  invoiceId: string,
-  data: Partial<Invoice>
+  id: string,
+  updates: Partial<Invoice>
 ): Promise<Invoice> {
-  const invoice = await getInvoiceById(orgId, invoiceId);
-  if (!invoice) throw new Error('Invoice not found.');
-  const updated: Invoice = {
-    ...invoice,
-    ...data,
-    updatedAt: new Date().toISOString(),
+  const supabase = getSupabase();
+  const payload: Record<string, any> = {
+    updated_at: new Date().toISOString(),
   };
-  db.invoices.set(invoiceId, updated);
 
-  if (updated.clientId) {
-    await recalculateClientTotals(orgId, updated.clientId);
+  if (updates.clientName !== undefined) payload.client_name = updates.clientName;
+  if (updates.clientEmail !== undefined) payload.client_email = updates.clientEmail;
+  if (updates.companyName !== undefined) payload.company_name = updates.companyName;
+  if (updates.invoiceNumber !== undefined) payload.invoice_number = updates.invoiceNumber;
+  if (updates.invoiceAmount !== undefined) payload.invoice_amount = updates.invoiceAmount;
+  if (updates.currency !== undefined) payload.currency = updates.currency;
+  if (updates.invoiceDate !== undefined) payload.invoice_date = updates.invoiceDate;
+  if (updates.dueDate !== undefined) payload.due_date = updates.dueDate;
+  if (updates.status !== undefined) payload.status = updates.status;
+  if (updates.daysOverdue !== undefined) payload.days_overdue = updates.daysOverdue;
+  if (updates.source !== undefined) payload.source = updates.source;
+  if (updates.sourceReference !== undefined) payload.source_reference = updates.sourceReference;
+  if (updates.lastReminderAt !== undefined) payload.last_reminder_at = updates.lastReminderAt;
+  if (updates.reminderCount !== undefined) payload.reminder_count = updates.reminderCount;
+  if (updates.nextReminderAt !== undefined) payload.next_reminder_at = updates.nextReminderAt;
+  if (updates.paymentReceivedAt !== undefined) payload.payment_received_at = updates.paymentReceivedAt;
+  if (updates.isPaused !== undefined) payload.is_paused = updates.isPaused;
+  if (updates.extractionConfidence !== undefined) payload.extraction_confidence = updates.extractionConfidence;
+  if (updates.notes !== undefined) payload.notes = updates.notes;
+
+  const { data, error } = await supabase
+    .from('invoices')
+    .update(payload)
+    .eq('organization_id', orgId)
+    .eq('id', id)
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to update invoice: ${error?.message}`);
   }
-  return updated;
+  return mapInvoice(data);
 }
 
-export async function deleteInvoice(orgId: string, invoiceId: string): Promise<boolean> {
-  const invoice = await getInvoiceById(orgId, invoiceId);
-  if (!invoice) return false;
-  db.invoices.delete(invoiceId);
+export async function deleteInvoice(orgId: string, id: string): Promise<void> {
+  const supabase = getSupabase();
+  const { error } = await supabase
+    .from('invoices')
+    .delete()
+    .eq('organization_id', orgId)
+    .eq('id', id);
+
+  if (error) {
+    throw new Error(`Failed to delete invoice: ${error.message}`);
+  }
+}
+
+/**
+ * Strict Reliability Rule:
+ * Marking an invoice PAID halts all pending/scheduled reminders permanently.
+ */
+export async function markInvoicePaid(orgId: string, id: string): Promise<Invoice> {
+  const supabase = getSupabase();
+  const now = new Date().toISOString();
+
+  // 1. Mark invoice PAID
+  const { data: invData, error: invError } = await supabase
+    .from('invoices')
+    .update({
+      status: 'PAID',
+      payment_received_at: now,
+      days_overdue: 0,
+      is_paused: false,
+      updated_at: now,
+    })
+    .eq('organization_id', orgId)
+    .eq('id', id)
+    .select('*')
+    .single();
+
+  if (invError || !invData) {
+    throw new Error(`Failed to mark invoice as paid: ${invError?.message}`);
+  }
+
+  const invoice = mapInvoice(invData);
+
+  // 2. Automatically cancel all active/pending reminders for this invoice
+  await supabase
+    .from('reminders')
+    .update({
+      status: 'CANCELLED',
+      last_error: 'Auto-cancelled: Invoice marked as PAID',
+      updated_at: now,
+    })
+    .eq('organization_id', orgId)
+    .eq('invoice_id', id)
+    .in('status', ['SCHEDULED', 'GENERATING', 'PENDING_APPROVAL']);
+
+  // 3. Update client totals
   if (invoice.clientId) {
-    await recalculateClientTotals(orgId, invoice.clientId);
-  }
-  return true;
-}
-
-export async function markInvoicePaid(orgId: string, invoiceId: string): Promise<Invoice> {
-  const invoice = await getInvoiceById(orgId, invoiceId);
-  if (!invoice) throw new Error('Invoice not found.');
-
-  invoice.status = 'PAID';
-  invoice.paymentReceivedAt = new Date().toISOString();
-  invoice.daysOverdue = 0;
-  invoice.nextReminderAt = undefined;
-  invoice.updatedAt = new Date().toISOString();
-  db.invoices.set(invoiceId, invoice);
-
-  // Cancel any scheduled / pending approval reminders for this invoice
-  let cancelledCount = 0;
-  for (const rem of db.reminders.values()) {
-    if (rem.organizationId === orgId && rem.invoiceId === invoiceId) {
-      if (rem.status === 'SCHEDULED' || rem.status === 'PENDING_APPROVAL' || rem.status === 'GENERATING') {
-        rem.status = 'CANCELLED';
-        rem.updatedAt = new Date().toISOString();
-        db.reminders.set(rem.id, rem);
-        cancelledCount++;
-      }
+    const client = await getClientById(orgId, invoice.clientId);
+    if (client) {
+      const newPaid = (client.totalPaid || 0) + invoice.invoiceAmount;
+      const newOutstanding = Math.max(0, (client.totalOutstanding || 0) - invoice.invoiceAmount);
+      await updateClient(orgId, invoice.clientId, {
+        totalPaid: newPaid,
+        totalOutstanding: newOutstanding,
+      });
     }
   }
 
-  // Recalculate client finances
-  if (invoice.clientId) {
-    await recalculateClientTotals(orgId, invoice.clientId);
-  }
-
-  // Audit Log
-  await createAuditLog(orgId, {
-    eventType: 'INVOICE_MARKED_PAID',
-    entityType: 'INVOICE',
-    entityId: invoiceId,
-    message: `Invoice #${invoice.invoiceNumber} marked as PAID. ${cancelledCount} pending reminder(s) cancelled automatically.`,
-  });
-
-  // Notification
-  const notif: NotificationItem = {
-    id: `notif_${Date.now()}`,
-    organizationId: orgId,
-    type: 'SUCCESS',
-    title: 'Payment Detected & Follow-ups Stopped',
-    message: `Invoice #${invoice.invoiceNumber} (${invoice.currency} ${invoice.invoiceAmount.toLocaleString()}) was marked PAID.`,
-    actionUrl: `/app/invoices/${invoice.id}`,
-    read: false,
-    createdAt: new Date().toISOString(),
-  };
-  db.notifications.set(notif.id, notif);
-
   return invoice;
 }
 
-export async function pauseInvoice(orgId: string, invoiceId: string): Promise<Invoice> {
-  const invoice = await getInvoiceById(orgId, invoiceId);
-  if (!invoice) throw new Error('Invoice not found.');
-  invoice.isPaused = true;
-  invoice.updatedAt = new Date().toISOString();
-  db.invoices.set(invoiceId, invoice);
-
-  await createAuditLog(orgId, {
-    eventType: 'INVOICE_PAUSED',
-    entityType: 'INVOICE',
-    entityId: invoiceId,
-    message: `Automated reminders paused for Invoice #${invoice.invoiceNumber}.`,
-  });
-  return invoice;
+export async function pauseInvoice(orgId: string, id: string): Promise<Invoice> {
+  return updateInvoice(orgId, id, { isPaused: true, status: 'STOPPED' });
 }
 
-export async function resumeInvoice(orgId: string, invoiceId: string): Promise<Invoice> {
-  const invoice = await getInvoiceById(orgId, invoiceId);
-  if (!invoice) throw new Error('Invoice not found.');
-  invoice.isPaused = false;
-  invoice.updatedAt = new Date().toISOString();
-  db.invoices.set(invoiceId, invoice);
-
-  await createAuditLog(orgId, {
-    eventType: 'INVOICE_RESUMED',
-    entityType: 'INVOICE',
-    entityId: invoiceId,
-    message: `Automated reminders resumed for Invoice #${invoice.invoiceNumber}.`,
-  });
-  return invoice;
+export async function resumeInvoice(orgId: string, id: string): Promise<Invoice> {
+  const inv = await getInvoiceById(orgId, id);
+  const status = inv && inv.daysOverdue > 0 ? 'OVERDUE' : 'DUE';
+  return updateInvoice(orgId, id, { isPaused: false, status });
 }
 
-export async function disputeInvoice(orgId: string, invoiceId: string): Promise<Invoice> {
-  const invoice = await getInvoiceById(orgId, invoiceId);
-  if (!invoice) throw new Error('Invoice not found.');
-  invoice.status = 'DISPUTED';
-  invoice.isPaused = true;
-  invoice.updatedAt = new Date().toISOString();
-  db.invoices.set(invoiceId, invoice);
-
-  await createAuditLog(orgId, {
-    eventType: 'INVOICE_DISPUTED',
-    entityType: 'INVOICE',
-    entityId: invoiceId,
-    message: `Invoice #${invoice.invoiceNumber} marked as DISPUTED. Reminders halted.`,
-  });
-  return invoice;
+export async function disputeInvoice(
+  orgId: string,
+  id: string,
+  disputed: boolean
+): Promise<Invoice> {
+  const inv = await getInvoiceById(orgId, id);
+  const status = disputed ? 'DISPUTED' : inv && inv.daysOverdue > 0 ? 'OVERDUE' : 'DUE';
+  return updateInvoice(orgId, id, { status });
 }
 
-/* -------------------------------------------------------------
-   REMINDERS OPERATIONS
-------------------------------------------------------------- */
+// ============================================================================
+// REMINDERS CRUD (Tenant Scoped)
+// ============================================================================
 export async function getReminders(orgId: string): Promise<Reminder[]> {
-  await seedInitialDataIfNeeded();
-  return Array.from(db.reminders.values()).filter((r) => r.organizationId === orgId);
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('reminders')
+    .select('*')
+    .eq('organization_id', orgId)
+    .order('scheduled_at', { ascending: true });
+
+  if (error || !data) return [];
+  return data.map(mapReminder);
 }
 
-export async function getReminderById(orgId: string, reminderId: string): Promise<Reminder | null> {
-  await seedInitialDataIfNeeded();
-  const r = db.reminders.get(reminderId);
-  if (r && r.organizationId === orgId) return r;
-  return null;
+export async function getReminderById(orgId: string, id: string): Promise<Reminder | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('reminders')
+    .select('*')
+    .eq('organization_id', orgId)
+    .eq('id', id)
+    .single();
+
+  if (error || !data) return null;
+  return mapReminder(data);
 }
 
 export async function createReminder(
   orgId: string,
-  data: Omit<Reminder, 'id' | 'organizationId' | 'createdAt' | 'updatedAt'>
+  reminderData: Omit<Reminder, 'id' | 'organizationId' | 'createdAt' | 'updatedAt'>
 ): Promise<Reminder> {
-  await seedInitialDataIfNeeded();
-  const id = `rem_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-  const reminder: Reminder = {
-    ...data,
-    id,
-    organizationId: orgId,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  db.reminders.set(id, reminder);
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('reminders')
+    .insert({
+      organization_id: orgId,
+      invoice_id: reminderData.invoiceId,
+      client_id: reminderData.clientId,
+      sequence_number: reminderData.sequenceNumber,
+      scheduled_at: reminderData.scheduledAt,
+      sent_at: reminderData.sentAt || null,
+      status: reminderData.status || 'SCHEDULED',
+      tone: reminderData.tone || 'PROFESSIONAL',
+      subject: reminderData.subject,
+      body: reminderData.body,
+      gmail_message_id: reminderData.gmailMessageId || null,
+      ai_generated: Boolean(reminderData.aiGenerated),
+      approved_by_user: Boolean(reminderData.approvedByUser),
+      requires_review: Boolean(reminderData.requiresReview),
+      last_error: reminderData.lastError || null,
+    })
+    .select('*')
+    .single();
 
-  await createAuditLog(orgId, {
-    eventType: 'REMINDER_CREATED',
-    entityType: 'REMINDER',
-    entityId: id,
-    message: `Reminder draft (Step ${reminder.sequenceNumber}) prepared for Invoice #${reminder.invoiceId}.`,
-  });
-
-  return reminder;
+  if (error || !data) {
+    throw new Error(`Failed to create reminder: ${error?.message}`);
+  }
+  return mapReminder(data);
 }
 
 export async function updateReminder(
   orgId: string,
-  reminderId: string,
-  data: Partial<Reminder>
+  id: string,
+  updates: Partial<Reminder>
 ): Promise<Reminder> {
-  const reminder = await getReminderById(orgId, reminderId);
-  if (!reminder) throw new Error('Reminder not found.');
-  const updated: Reminder = {
-    ...reminder,
-    ...data,
-    updatedAt: new Date().toISOString(),
+  const supabase = getSupabase();
+  const payload: Record<string, any> = {
+    updated_at: new Date().toISOString(),
   };
-  db.reminders.set(reminderId, updated);
-  return updated;
+
+  if (updates.sequenceNumber !== undefined) payload.sequence_number = updates.sequenceNumber;
+  if (updates.scheduledAt !== undefined) payload.scheduled_at = updates.scheduledAt;
+  if (updates.sentAt !== undefined) payload.sent_at = updates.sentAt;
+  if (updates.status !== undefined) payload.status = updates.status;
+  if (updates.tone !== undefined) payload.tone = updates.tone;
+  if (updates.subject !== undefined) payload.subject = updates.subject;
+  if (updates.body !== undefined) payload.body = updates.body;
+  if (updates.gmailMessageId !== undefined) payload.gmail_message_id = updates.gmailMessageId;
+  if (updates.aiGenerated !== undefined) payload.ai_generated = updates.aiGenerated;
+  if (updates.approvedByUser !== undefined) payload.approved_by_user = updates.approvedByUser;
+  if (updates.requiresReview !== undefined) payload.requires_review = updates.requiresReview;
+  if (updates.lastError !== undefined) payload.last_error = updates.lastError;
+
+  const { data, error } = await supabase
+    .from('reminders')
+    .update(payload)
+    .eq('organization_id', orgId)
+    .eq('id', id)
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to update reminder: ${error?.message}`);
+  }
+  return mapReminder(data);
 }
 
 export async function approveAndSendReminder(
   orgId: string,
-  reminderId: string,
-  senderEmail?: string
-): Promise<{ reminder: Reminder; emailEvent: EmailEvent }> {
-  const reminder = await getReminderById(orgId, reminderId);
+  id: string,
+  senderEmail: string
+): Promise<Reminder> {
+  const supabase = getSupabase();
+  const reminder = await getReminderById(orgId, id);
   if (!reminder) throw new Error('Reminder not found.');
 
+  const now = new Date().toISOString();
+  const messageId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+  // 1. Update reminder status
+  const updated = await updateReminder(orgId, id, {
+    status: 'SENT',
+    sentAt: now,
+    approvedByUser: true,
+    requiresReview: false,
+    gmailMessageId: messageId,
+  });
+
+  // 2. Update invoice last reminder time and count
   const invoice = await getInvoiceById(orgId, reminder.invoiceId);
-  const client = await getClientById(orgId, reminder.clientId);
-
-  reminder.status = 'SENT';
-  reminder.approvedByUser = true;
-  reminder.requiresReview = false;
-  reminder.sentAt = new Date().toISOString();
-  reminder.gmailMessageId = `msg_gmail_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  reminder.updatedAt = new Date().toISOString();
-  db.reminders.set(reminderId, reminder);
-
-  // Update invoice last reminder timestamp & status
   if (invoice) {
-    invoice.lastReminderAt = reminder.sentAt;
-    invoice.reminderCount = (invoice.reminderCount || 0) + 1;
-    if (reminder.sequenceNumber === 1) invoice.status = 'REMINDER_1';
-    else if (reminder.sequenceNumber === 2) invoice.status = 'REMINDER_2';
-    else if (reminder.sequenceNumber === 3) invoice.status = 'FINAL_NOTICE';
-    invoice.updatedAt = new Date().toISOString();
-    db.invoices.set(invoice.id, invoice);
+    const nextStatus =
+      reminder.sequenceNumber === 1
+        ? 'REMINDER_1'
+        : reminder.sequenceNumber === 2
+        ? 'REMINDER_2'
+        : 'FINAL_NOTICE';
+
+    await updateInvoice(orgId, invoice.id, {
+      status: nextStatus,
+      lastReminderAt: now,
+      reminderCount: (invoice.reminderCount || 0) + 1,
+    });
   }
 
-  // Create Outbound Email Event
-  const emailEventId = `evt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-  const emailEvent: EmailEvent = {
-    id: emailEventId,
-    organizationId: orgId,
+  // 3. Log Outbound Email Event
+  await createEmailEvent(orgId, {
     invoiceId: reminder.invoiceId,
     clientId: reminder.clientId,
-    gmailMessageId: reminder.gmailMessageId,
+    gmailMessageId: messageId,
     direction: 'OUTBOUND',
     eventType: 'REMINDER_SENT',
     subject: reminder.subject,
-    sender: senderEmail || 'accounts@invoiceweb.ai',
-    recipient: invoice?.clientEmail || client?.email || 'client@example.com',
-    bodyPreview: reminder.body.substring(0, 160) + (reminder.body.length > 160 ? '...' : ''),
-    eventTimestamp: reminder.sentAt,
-    createdAt: reminder.sentAt,
-  };
-  db.emailEvents.set(emailEventId, emailEvent);
-
-  // Audit log
-  await createAuditLog(orgId, {
-    eventType: 'REMINDER_SENT',
-    entityType: 'REMINDER',
-    entityId: reminderId,
-    message: `Sent Reminder #${reminder.sequenceNumber} to ${emailEvent.recipient} for Invoice #${invoice?.invoiceNumber || reminder.invoiceId}.`,
+    sender: senderEmail,
+    recipient: invoice?.clientEmail || 'client@example.com',
+    bodyPreview: reminder.body.substring(0, 160),
+    eventTimestamp: now,
   });
 
-  // Increment usage count
-  await incrementUsage(orgId, 'remindersSentCount', 1);
-
-  return { reminder, emailEvent };
+  return updated;
 }
 
-export async function cancelReminder(orgId: string, reminderId: string): Promise<Reminder> {
-  const reminder = await getReminderById(orgId, reminderId);
-  if (!reminder) throw new Error('Reminder not found.');
-  reminder.status = 'CANCELLED';
-  reminder.updatedAt = new Date().toISOString();
-  db.reminders.set(reminderId, reminder);
-
-  await createAuditLog(orgId, {
-    eventType: 'REMINDER_CANCELLED',
-    entityType: 'REMINDER',
-    entityId: reminderId,
-    message: `Cancelled follow-up reminder #${reminder.sequenceNumber} for Invoice #${reminder.invoiceId}.`,
+export async function cancelReminder(
+  orgId: string,
+  id: string,
+  reason: string
+): Promise<Reminder> {
+  return updateReminder(orgId, id, {
+    status: 'CANCELLED',
+    lastError: `Cancelled: ${reason}`,
   });
-
-  return reminder;
 }
 
-/* -------------------------------------------------------------
-   EMAIL EVENTS & AUDIT LOGS
-------------------------------------------------------------- */
+// ============================================================================
+// EMAIL EVENTS & AUDIT LOGS (Tenant Scoped)
+// ============================================================================
 export async function getEmailEvents(orgId: string): Promise<EmailEvent[]> {
-  await seedInitialDataIfNeeded();
-  return Array.from(db.emailEvents.values())
-    .filter((e) => e.organizationId === orgId)
-    .sort((a, b) => new Date(b.eventTimestamp).getTime() - new Date(a.eventTimestamp).getTime());
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('email_events')
+    .select('*')
+    .eq('organization_id', orgId)
+    .order('event_timestamp', { ascending: false });
+
+  if (error || !data) return [];
+  return data.map(mapEmailEvent);
+}
+
+export async function createEmailEvent(
+  orgId: string,
+  data: Omit<EmailEvent, 'id' | 'organizationId' | 'createdAt'>
+): Promise<EmailEvent> {
+  const supabase = getSupabase();
+  const { data: row, error } = await supabase
+    .from('email_events')
+    .insert({
+      organization_id: orgId,
+      invoice_id: data.invoiceId || null,
+      client_id: data.clientId || null,
+      gmail_message_id: data.gmailMessageId || null,
+      thread_id: data.threadId || null,
+      direction: data.direction || 'OUTBOUND',
+      event_type: data.eventType,
+      subject: data.subject,
+      sender: data.sender,
+      recipient: data.recipient,
+      body_preview: data.bodyPreview || null,
+      event_timestamp: data.eventTimestamp || new Date().toISOString(),
+      metadata: data.metadata || null,
+    })
+    .select('*')
+    .single();
+
+  if (error || !row) {
+    throw new Error(`Failed to create email event: ${error?.message}`);
+  }
+  return mapEmailEvent(row);
 }
 
 export async function getAuditLogs(orgId: string): Promise<AuditLog[]> {
-  await seedInitialDataIfNeeded();
-  return Array.from(db.auditLogs.values())
-    .filter((a) => a.organizationId === orgId)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('audit_logs')
+    .select('*')
+    .eq('organization_id', orgId)
+    .order('created_at', { ascending: false });
+
+  if (error || !data) return [];
+  return data.map(mapAuditLog);
 }
 
 export async function createAuditLog(
   orgId: string,
   data: Omit<AuditLog, 'id' | 'organizationId' | 'createdAt'>
 ): Promise<AuditLog> {
-  await seedInitialDataIfNeeded();
-  const id = `aud_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-  const log: AuditLog = {
-    ...data,
-    id,
-    organizationId: orgId,
-    createdAt: new Date().toISOString(),
-  };
-  db.auditLogs.set(id, log);
-  return log;
+  const supabase = getSupabase();
+  const { data: row, error } = await supabase
+    .from('audit_logs')
+    .insert({
+      organization_id: orgId,
+      user_id: data.userId || null,
+      event_type: data.eventType,
+      entity_type: data.entityType,
+      entity_id: data.entityId,
+      message: data.message,
+      metadata: data.metadata || null,
+    })
+    .select('*')
+    .single();
+
+  if (error || !row) {
+    throw new Error(`Failed to create audit log: ${error?.message}`);
+  }
+  return mapAuditLog(row);
 }
 
-/* -------------------------------------------------------------
-   CONNECTIONS OPERATIONS
-------------------------------------------------------------- */
+// ============================================================================
+// CONNECTIONS (Tenant Scoped)
+// ============================================================================
 export async function getConnections(orgId: string): Promise<Connection[]> {
-  await seedInitialDataIfNeeded();
-  return Array.from(db.connections.values()).filter((c) => c.organizationId === orgId);
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('connections')
+    .select('*')
+    .eq('organization_id', orgId);
+
+  if (error || !data) return [];
+  return data.map(mapConnection);
 }
 
 export async function upsertConnection(
@@ -935,82 +1245,67 @@ export async function upsertConnection(
   provider: 'GMAIL' | 'GOOGLE_SHEETS',
   data: Partial<Connection>
 ): Promise<Connection> {
-  await seedInitialDataIfNeeded();
-  const key = `${orgId}_${provider}`;
-  const existing = db.connections.get(key);
+  const supabase = getSupabase();
+  const { data: row, error } = await supabase
+    .from('connections')
+    .upsert(
+      {
+        organization_id: orgId,
+        provider,
+        status: data.status || 'CONNECTED',
+        account_identifier: data.accountIdentifier || 'account@example.com',
+        scopes: data.scopes || [],
+        last_sync_at: new Date().toISOString(),
+        sheet_metadata: data.sheetMetadata || null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'organization_id,provider' }
+    )
+    .select('*')
+    .single();
 
-  const conn: Connection = {
-    id: existing?.id || `conn_${provider.toLowerCase()}_${Date.now()}`,
-    organizationId: orgId,
-    provider,
-    status: data.status || 'CONNECTED',
-    accountIdentifier: data.accountIdentifier || existing?.accountIdentifier || 'connected@account.com',
-    scopes: data.scopes || existing?.scopes || ['https://www.googleapis.com/auth/userinfo.email'],
-    lastSyncAt: new Date().toISOString(),
-    sheetMetadata: data.sheetMetadata || existing?.sheetMetadata,
-    createdAt: existing?.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  db.connections.set(key, conn);
-
-  await createAuditLog(orgId, {
-    eventType: 'CONNECTION_UPDATED',
-    entityType: 'CONNECTION',
-    entityId: conn.id,
-    message: `Updated integration ${provider} (${conn.status}).`,
-  });
-
-  return conn;
+  if (error || !row) {
+    throw new Error(`Failed to update connection: ${error?.message}`);
+  }
+  return mapConnection(row);
 }
 
 export async function disconnectConnection(
   orgId: string,
   provider: 'GMAIL' | 'GOOGLE_SHEETS'
 ): Promise<Connection> {
-  const key = `${orgId}_${provider}`;
-  const existing = db.connections.get(key);
-  if (!existing) {
-    const conn: Connection = {
-      id: `conn_${provider.toLowerCase()}_${Date.now()}`,
-      organizationId: orgId,
-      provider,
+  const supabase = getSupabase();
+  const { data: row, error } = await supabase
+    .from('connections')
+    .update({
       status: 'DISCONNECTED',
-      accountIdentifier: '',
-      scopes: [],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    db.connections.set(key, conn);
-    return conn;
+      updated_at: new Date().toISOString(),
+    })
+    .eq('organization_id', orgId)
+    .eq('provider', provider)
+    .select('*')
+    .single();
+
+  if (error || !row) {
+    throw new Error(`Failed to disconnect: ${error?.message}`);
   }
-
-  existing.status = 'DISCONNECTED';
-  existing.updatedAt = new Date().toISOString();
-  db.connections.set(key, existing);
-
-  await createAuditLog(orgId, {
-    eventType: 'CONNECTION_DISCONNECTED',
-    entityType: 'CONNECTION',
-    entityId: existing.id,
-    message: `Disconnected integration ${provider}.`,
-  });
-
-  return existing;
+  return mapConnection(row);
 }
 
-/* -------------------------------------------------------------
-   SETTINGS & SUBSCRIPTIONS & NOTIFICATIONS
-------------------------------------------------------------- */
-export async function updateAutomationSettings(
-  orgId: string,
-  data: Partial<AutomationSettings>
-): Promise<AutomationSettings> {
-  await seedInitialDataIfNeeded();
-  const current =
-    db.automationSettings.get(orgId) ||
-    ({
-      id: `auto_${orgId}`,
+// ============================================================================
+// SETTINGS (Automation & AI) (Tenant Scoped)
+// ============================================================================
+export async function getAutomationSettings(orgId: string): Promise<AutomationSettings> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('automation_settings')
+    .select('*')
+    .eq('organization_id', orgId)
+    .single();
+
+  if (error || !data) {
+    return {
+      id: '',
       organizationId: orgId,
       automaticReminders: true,
       automaticallyStopWhenPaid: true,
@@ -1018,51 +1313,107 @@ export async function updateAutomationSettings(
       preferredSendingTime: '10:00',
       timezone: 'Asia/Kolkata',
       policyTier: 'STANDARD',
-      policyIntervals: { firstReminderDays: 3, secondReminderDays: 10, finalReminderDays: 17 },
+      policyIntervals: {
+        firstReminderDays: 3,
+        secondReminderDays: 10,
+        finalReminderDays: 17,
+      },
       maxReminders: 3,
-    } as AutomationSettings);
-
-  const updated: AutomationSettings = {
-    ...current,
-    ...data,
-  };
-  db.automationSettings.set(orgId, updated);
-  return updated;
+    };
+  }
+  return mapAutomationSettings(data);
 }
 
-export async function updateAISettings(
+export async function updateAutomationSettings(
   orgId: string,
-  data: Partial<AISettings>
-): Promise<AISettings> {
-  await seedInitialDataIfNeeded();
-  const current =
-    db.aiSettings.get(orgId) ||
-    ({
-      id: `ai_${orgId}`,
+  updates: Partial<AutomationSettings>
+): Promise<AutomationSettings> {
+  const supabase = getSupabase();
+  const payload: Record<string, any> = {
+    organization_id: orgId,
+  };
+
+  if (updates.automaticReminders !== undefined) payload.automatic_reminders = updates.automaticReminders;
+  if (updates.automaticallyStopWhenPaid !== undefined) payload.automatically_stop_when_paid = updates.automaticallyStopWhenPaid;
+  if (updates.avoidWeekends !== undefined) payload.avoid_weekends = updates.avoidWeekends;
+  if (updates.preferredSendingTime !== undefined) payload.preferred_sending_time = updates.preferredSendingTime;
+  if (updates.timezone !== undefined) payload.timezone = updates.timezone;
+  if (updates.policyTier !== undefined) payload.policy_tier = updates.policyTier;
+  if (updates.policyIntervals !== undefined) payload.policy_intervals = updates.policyIntervals;
+  if (updates.maxReminders !== undefined) payload.max_reminders = updates.maxReminders;
+
+  const { data, error } = await supabase
+    .from('automation_settings')
+    .upsert(payload, { onConflict: 'organization_id' })
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to update automation settings: ${error?.message}`);
+  }
+  return mapAutomationSettings(data);
+}
+
+export async function getAISettings(orgId: string): Promise<AISettings> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('ai_settings')
+    .select('*')
+    .eq('organization_id', orgId)
+    .single();
+
+  if (error || !data) {
+    return {
+      id: '',
       organizationId: orgId,
       communicationStyle: 'PROFESSIONAL',
       relationshipAwarePersonalization: true,
       reviewBeforeSending: true,
-      customToneInstructions: '',
-    } as AISettings);
-
-  const updated: AISettings = {
-    ...current,
-    ...data,
-  };
-  db.aiSettings.set(orgId, updated);
-  return updated;
+    };
+  }
+  return mapAISettings(data);
 }
 
-export async function updateSubscriptionPlan(
+export async function updateAISettings(
   orgId: string,
-  plan: SubscriptionPlan
-): Promise<Subscription> {
-  await seedInitialDataIfNeeded();
-  const current =
-    db.subscriptions.get(orgId) ||
-    ({
-      id: `sub_${orgId}`,
+  updates: Partial<AISettings>
+): Promise<AISettings> {
+  const supabase = getSupabase();
+  const payload: Record<string, any> = {
+    organization_id: orgId,
+  };
+
+  if (updates.communicationStyle !== undefined) payload.communication_style = updates.communicationStyle;
+  if (updates.relationshipAwarePersonalization !== undefined) payload.relationship_aware_personalization = updates.relationshipAwarePersonalization;
+  if (updates.reviewBeforeSending !== undefined) payload.review_before_sending = updates.reviewBeforeSending;
+  if (updates.customToneInstructions !== undefined) payload.custom_tone_instructions = updates.customToneInstructions;
+
+  const { data, error } = await supabase
+    .from('ai_settings')
+    .upsert(payload, { onConflict: 'organization_id' })
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to update AI settings: ${error?.message}`);
+  }
+  return mapAISettings(data);
+}
+
+// ============================================================================
+// SUBSCRIPTIONS & USAGE (Tenant Scoped)
+// ============================================================================
+export async function getSubscription(orgId: string): Promise<Subscription> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('subscriptions')
+    .select('*')
+    .eq('organization_id', orgId)
+    .single();
+
+  if (error || !data) {
+    return {
+      id: '',
       organizationId: orgId,
       plan: 'FREE',
       status: 'ACTIVE',
@@ -1070,35 +1421,51 @@ export async function updateSubscriptionPlan(
       currentPeriodEnd: new Date(Date.now() + 30 * 86400000).toISOString(),
       cancelAtPeriodEnd: false,
       limits: getPlanLimits('FREE'),
-    } as Subscription);
-
-  const updated: Subscription = {
-    ...current,
-    plan,
-    limits: getPlanLimits(plan),
-  };
-  db.subscriptions.set(orgId, updated);
-
-  await createAuditLog(orgId, {
-    eventType: 'SUBSCRIPTION_UPGRADED',
-    entityType: 'BILLING',
-    entityId: updated.id,
-    message: `Plan upgraded to ${plan}.`,
-  });
-
-  return updated;
+    };
+  }
+  return mapSubscription(data);
 }
 
-export async function incrementUsage(
+export async function updateSubscriptionPlan(
   orgId: string,
-  field: 'remindersSentCount' | 'aiGenerationsCount' | 'activeInvoicesCount' | 'connectedGmailAccounts',
-  amount: number = 1
-) {
-  await seedInitialDataIfNeeded();
+  plan: SubscriptionPlan
+): Promise<Subscription> {
+  const supabase = getSupabase();
+  const limits = getPlanLimits(plan);
+
+  const { data, error } = await supabase
+    .from('subscriptions')
+    .upsert(
+      {
+        organization_id: orgId,
+        plan,
+        status: 'ACTIVE',
+        limits,
+      },
+      { onConflict: 'organization_id' }
+    )
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to update subscription: ${error?.message}`);
+  }
+  return mapSubscription(data);
+}
+
+export async function getUsage(orgId: string): Promise<Usage> {
+  const supabase = getSupabase();
   const currentMonth = new Date().toISOString().substring(0, 7);
-  let usage = db.usage.get(orgId);
-  if (!usage || usage.month !== currentMonth) {
-    usage = {
+
+  const { data, error } = await supabase
+    .from('usage')
+    .select('*')
+    .eq('organization_id', orgId)
+    .eq('month', currentMonth)
+    .single();
+
+  if (error || !data) {
+    return {
       organizationId: orgId,
       month: currentMonth,
       activeInvoicesCount: 0,
@@ -1107,32 +1474,61 @@ export async function incrementUsage(
       connectedGmailAccounts: 0,
     };
   }
-  usage[field] = (usage[field] || 0) + amount;
-  db.usage.set(orgId, usage);
+  return mapUsage(data);
 }
 
+// ============================================================================
+// NOTIFICATIONS (Tenant Scoped)
+// ============================================================================
 export async function getNotifications(orgId: string): Promise<NotificationItem[]> {
-  await seedInitialDataIfNeeded();
-  return Array.from(db.notifications.values())
-    .filter((n) => n.organizationId === orgId)
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('notifications')
+    .select('*')
+    .eq('organization_id', orgId)
+    .order('created_at', { ascending: false });
+
+  if (error || !data) return [];
+  return data.map(mapNotification);
 }
 
-export async function markNotificationRead(orgId: string, notifId: string): Promise<boolean> {
-  const notif = db.notifications.get(notifId);
-  if (notif && notif.organizationId === orgId) {
-    notif.read = true;
-    db.notifications.set(notifId, notif);
-    return true;
+export async function createNotification(
+  orgId: string,
+  data: Omit<NotificationItem, 'id' | 'organizationId' | 'createdAt'>
+): Promise<NotificationItem> {
+  const supabase = getSupabase();
+  const { data: row, error } = await supabase
+    .from('notifications')
+    .insert({
+      organization_id: orgId,
+      type: data.type || 'INFO',
+      title: data.title,
+      message: data.message,
+      action_url: data.actionUrl || null,
+      read: Boolean(data.read),
+    })
+    .select('*')
+    .single();
+
+  if (error || !row) {
+    throw new Error(`Failed to create notification: ${error?.message}`);
   }
-  return false;
+  return mapNotification(row);
+}
+
+export async function markNotificationRead(orgId: string, id: string): Promise<void> {
+  const supabase = getSupabase();
+  await supabase
+    .from('notifications')
+    .update({ read: true })
+    .eq('organization_id', orgId)
+    .eq('id', id);
 }
 
 export async function markAllNotificationsRead(orgId: string): Promise<void> {
-  for (const notif of db.notifications.values()) {
-    if (notif.organizationId === orgId) {
-      notif.read = true;
-      db.notifications.set(notif.id, notif);
-    }
-  }
+  const supabase = getSupabase();
+  await supabase
+    .from('notifications')
+    .update({ read: true })
+    .eq('organization_id', orgId);
 }
