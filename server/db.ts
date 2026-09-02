@@ -737,6 +737,45 @@ export async function deleteClient(orgId: string, id: string): Promise<void> {
 }
 
 // ============================================================================
+// CLIENT RECALCULATION & HELPERS (Authoritative Financial Safety)
+// ============================================================================
+export async function recalculateClientTotals(orgId: string, clientId: string): Promise<void> {
+  const supabase = getSupabase();
+  const { data: invs, error } = await supabase
+    .from('invoices')
+    .select('invoice_amount, status')
+    .eq('organization_id', orgId)
+    .eq('client_id', clientId);
+
+  if (error || !invs) return;
+
+  let totalInvoiced = 0;
+  let totalPaid = 0;
+  let totalOutstanding = 0;
+
+  for (const inv of invs) {
+    const amount = Number(inv.invoice_amount) || 0;
+    totalInvoiced += amount;
+    if (inv.status === 'PAID') {
+      totalPaid += amount;
+    } else {
+      totalOutstanding += amount;
+    }
+  }
+
+  await supabase
+    .from('clients')
+    .update({
+      total_invoiced: totalInvoiced,
+      total_paid: totalPaid,
+      total_outstanding: totalOutstanding,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('organization_id', orgId)
+    .eq('id', clientId);
+}
+
+// ============================================================================
 // INVOICES CRUD (Tenant Scoped)
 // ============================================================================
 export async function getInvoices(orgId: string): Promise<Invoice[]> {
@@ -831,15 +870,9 @@ export async function createInvoice(
 
   const created = mapInvoice(data);
 
-  // Update client financial statistics
+  // Authoritative recalculation of client totals (no double counting)
   if (clientId) {
-    const client = await getClientById(orgId, clientId);
-    if (client) {
-      await updateClient(orgId, clientId, {
-        totalInvoiced: (client.totalInvoiced || 0) + invoiceData.invoiceAmount,
-        totalOutstanding: (client.totalOutstanding || 0) + invoiceData.invoiceAmount,
-      });
-    }
+    await recalculateClientTotals(orgId, clientId);
   }
 
   return created;
@@ -886,11 +919,27 @@ export async function updateInvoice(
   if (error || !data) {
     throw new Error(`Failed to update invoice: ${error?.message}`);
   }
-  return mapInvoice(data);
+
+  const updated = mapInvoice(data);
+  if (updated.clientId) {
+    await recalculateClientTotals(orgId, updated.clientId);
+  }
+
+  return updated;
 }
 
 export async function deleteInvoice(orgId: string, id: string): Promise<void> {
   const supabase = getSupabase();
+  const invoice = await getInvoiceById(orgId, id);
+
+  // 1. Delete associated reminders
+  await supabase
+    .from('reminders')
+    .delete()
+    .eq('organization_id', orgId)
+    .eq('invoice_id', id);
+
+  // 2. Delete invoice
   const { error } = await supabase
     .from('invoices')
     .delete()
@@ -900,13 +949,29 @@ export async function deleteInvoice(orgId: string, id: string): Promise<void> {
   if (error) {
     throw new Error(`Failed to delete invoice: ${error.message}`);
   }
+
+  // 3. Recalculate client totals
+  if (invoice?.clientId) {
+    await recalculateClientTotals(orgId, invoice.clientId);
+  }
 }
 
 /**
  * Strict Reliability Rule:
  * Marking an invoice PAID halts all pending/scheduled reminders permanently.
+ * Idempotent: repeated calls do not double-count payments.
  */
 export async function markInvoicePaid(orgId: string, id: string): Promise<Invoice> {
+  const existing = await getInvoiceById(orgId, id);
+  if (!existing) {
+    throw new Error('Invoice not found.');
+  }
+
+  // Idempotent: if already paid, return existing invoice directly
+  if (existing.status === 'PAID') {
+    return existing;
+  }
+
   const supabase = getSupabase();
   const now = new Date().toISOString();
 
@@ -931,7 +996,7 @@ export async function markInvoicePaid(orgId: string, id: string): Promise<Invoic
 
   const invoice = mapInvoice(invData);
 
-  // 2. Automatically cancel all active/pending reminders for this invoice
+  // 2. Automatically cancel all active/pending reminders for this invoice (never cancel sent history)
   await supabase
     .from('reminders')
     .update({
@@ -943,29 +1008,47 @@ export async function markInvoicePaid(orgId: string, id: string): Promise<Invoic
     .eq('invoice_id', id)
     .in('status', ['SCHEDULED', 'GENERATING', 'PENDING_APPROVAL']);
 
-  // 3. Update client totals
+  // 3. Authoritatively recalculate client totals
   if (invoice.clientId) {
-    const client = await getClientById(orgId, invoice.clientId);
-    if (client) {
-      const newPaid = (client.totalPaid || 0) + invoice.invoiceAmount;
-      const newOutstanding = Math.max(0, (client.totalOutstanding || 0) - invoice.invoiceAmount);
-      await updateClient(orgId, invoice.clientId, {
-        totalPaid: newPaid,
-        totalOutstanding: newOutstanding,
-      });
-    }
+    await recalculateClientTotals(orgId, invoice.clientId);
   }
+
+  // 4. Log audit event
+  await createAuditLog(orgId, {
+    eventType: 'PAYMENT_RECORDED',
+    entityType: 'INVOICE',
+    entityId: id,
+    message: `Invoice #${invoice.invoiceNumber} marked as PAID. All pending reminders halted.`,
+  });
 
   return invoice;
 }
 
 export async function pauseInvoice(orgId: string, id: string): Promise<Invoice> {
+  const inv = await getInvoiceById(orgId, id);
+  if (!inv) throw new Error('Invoice not found.');
+
+  // If already PAID or DISPUTED, preserve status while setting is_paused
+  if (inv.status === 'PAID' || inv.status === 'DISPUTED') {
+    return updateInvoice(orgId, id, { isPaused: true });
+  }
+
   return updateInvoice(orgId, id, { isPaused: true, status: 'STOPPED' });
 }
 
 export async function resumeInvoice(orgId: string, id: string): Promise<Invoice> {
   const inv = await getInvoiceById(orgId, id);
-  const status = inv && inv.daysOverdue > 0 ? 'OVERDUE' : 'DUE';
+  if (!inv) throw new Error('Invoice not found.');
+
+  if (inv.status === 'PAID') {
+    throw new Error('Cannot resume reminders for an invoice that is already PAID.');
+  }
+
+  if (inv.status === 'DISPUTED') {
+    throw new Error('Cannot resume reminders while invoice is DISPUTED. Please resolve the dispute first.');
+  }
+
+  const status = inv.daysOverdue > 0 ? 'OVERDUE' : 'DUE';
   return updateInvoice(orgId, id, { isPaused: false, status });
 }
 
@@ -975,8 +1058,36 @@ export async function disputeInvoice(
   disputed: boolean
 ): Promise<Invoice> {
   const inv = await getInvoiceById(orgId, id);
-  const status = disputed ? 'DISPUTED' : inv && inv.daysOverdue > 0 ? 'OVERDUE' : 'DUE';
-  return updateInvoice(orgId, id, { status });
+  if (!inv) throw new Error('Invoice not found.');
+
+  if (disputed) {
+    const now = new Date().toISOString();
+    const supabase = getSupabase();
+
+    // Cancel active/pending reminders
+    await supabase
+      .from('reminders')
+      .update({
+        status: 'CANCELLED',
+        last_error: 'Auto-cancelled: Invoice marked as DISPUTED',
+        updated_at: now,
+      })
+      .eq('organization_id', orgId)
+      .eq('invoice_id', id)
+      .in('status', ['SCHEDULED', 'GENERATING', 'PENDING_APPROVAL']);
+
+    return updateInvoice(orgId, id, {
+      status: 'DISPUTED',
+      isPaused: true,
+    });
+  } else {
+    // Explicit user resolution of dispute
+    const status = inv.daysOverdue > 0 ? 'OVERDUE' : 'DUE';
+    return updateInvoice(orgId, id, {
+      status,
+      isPaused: false,
+    });
+  }
 }
 
 // ============================================================================
@@ -1077,59 +1188,43 @@ export async function updateReminder(
   return mapReminder(data);
 }
 
+/**
+ * Reliability Rule (IC-V1.0.3):
+ * NEVER mark a reminder SENT unless an actual email provider confirms successful dispatch.
+ * Because Gmail sending is scheduled for a future milestone (IC-V1.0.4+),
+ * attempting to dispatch live email must NOT fabricate fake Gmail IDs or fake SENT states.
+ */
 export async function approveAndSendReminder(
   orgId: string,
   id: string,
   senderEmail: string
 ): Promise<Reminder> {
-  const supabase = getSupabase();
   const reminder = await getReminderById(orgId, id);
   if (!reminder) throw new Error('Reminder not found.');
 
-  const now = new Date().toISOString();
-  const messageId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-
-  // 1. Update reminder status
-  const updated = await updateReminder(orgId, id, {
-    status: 'SENT',
-    sentAt: now,
-    approvedByUser: true,
-    requiresReview: false,
-    gmailMessageId: messageId,
-  });
-
-  // 2. Update invoice last reminder time and count
   const invoice = await getInvoiceById(orgId, reminder.invoiceId);
-  if (invoice) {
-    const nextStatus =
-      reminder.sequenceNumber === 1
-        ? 'REMINDER_1'
-        : reminder.sequenceNumber === 2
-        ? 'REMINDER_2'
-        : 'FINAL_NOTICE';
-
-    await updateInvoice(orgId, invoice.id, {
-      status: nextStatus,
-      lastReminderAt: now,
-      reminderCount: (invoice.reminderCount || 0) + 1,
-    });
+  if (!invoice) throw new Error('Associated invoice not found.');
+  if (invoice.status === 'PAID') {
+    throw new Error('Cannot send reminder for an invoice that is already PAID.');
+  }
+  if (invoice.status === 'DISPUTED') {
+    throw new Error('Cannot send reminder for an invoice in DISPUTED status.');
   }
 
-  // 3. Log Outbound Email Event
-  await createEmailEvent(orgId, {
-    invoiceId: reminder.invoiceId,
-    clientId: reminder.clientId,
-    gmailMessageId: messageId,
-    direction: 'OUTBOUND',
-    eventType: 'REMINDER_SENT',
-    subject: reminder.subject,
-    sender: senderEmail,
-    recipient: invoice?.clientEmail || 'client@example.com',
-    bodyPreview: reminder.body.substring(0, 160),
-    eventTimestamp: now,
-  });
+  // Check if live email dispatch provider is active and connected
+  const connections = await getConnections(orgId);
+  const gmailConn = connections.find((c) => c.provider === 'GMAIL' && c.status === 'CONNECTED');
 
-  return updated;
+  if (!gmailConn) {
+    const error = new Error('Gmail integration is not connected. Connect Gmail in Connections to dispatch live payment reminders.');
+    (error as any).code = 'INTEGRATION_REQUIRED';
+    throw error;
+  }
+
+  // If connected, actual Gmail OAuth sending will be performed here in future integration milestone
+  const error = new Error('Gmail live sending is not yet enabled in this environment.');
+  (error as any).code = 'INTEGRATION_REQUIRED';
+  throw error;
 }
 
 export async function cancelReminder(

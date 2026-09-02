@@ -26,7 +26,7 @@ import {
   INITIAL_SUBSCRIPTION,
   INITIAL_USAGE,
 } from '../utils/storage';
-import { api, getStoredToken, setStoredToken, getStoredOrgId, setStoredOrgId } from '../utils/api';
+import { api, getStoredOrgId, setStoredOrgId } from '../utils/api';
 
 export interface AppContextType {
   // Auth state
@@ -184,14 +184,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   useEffect(() => {
     async function initSession() {
       setIsLoadingAuth(true);
-      const token = getStoredToken();
-
-      if (!token) {
-        setIsAuthenticated(false);
-        setIsLoadingAuth(false);
-        return;
-      }
-
       try {
         const res = await api.get('/api/auth/me');
         setUser(res.user);
@@ -209,10 +201,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         });
         setIsAuthenticated(true);
         await fetchOrgData(workspace.organization.id);
-      } catch (err) {
-        console.warn('Session expired or invalid token:', err);
-        setStoredToken(null);
-        setStoredOrgId(null);
+      } catch {
+        // No active session cookie or session expired
         setIsAuthenticated(false);
       } finally {
         setIsLoadingAuth(false);
@@ -226,7 +216,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const login = async (email: string, password?: string): Promise<boolean> => {
     try {
       const res = await api.post('/api/auth/login', { email, password });
-      setStoredToken(res.token);
       setUser(res.user);
       setOrganization(res.organization);
       setStoredOrgId(res.organization.id);
@@ -261,7 +250,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         name,
         companyName,
       });
-      setStoredToken(res.token);
       setUser(res.user);
       setOrganization(res.organization);
       setStoredOrgId(res.organization.id);
@@ -296,7 +284,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     } catch {
       // ignore
     }
-    setStoredToken(null);
     setStoredOrgId(null);
     setIsAuthenticated(false);
     setUser(INITIAL_USER);

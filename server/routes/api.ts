@@ -44,6 +44,7 @@ import {
   updateUserProfile,
 } from '../db';
 import { requireAuth, requireOrgMember, AuthenticatedRequest } from '../auth';
+import { generateReminderDraft } from '../gemini';
 
 export const apiRouter = Router();
 
@@ -95,7 +96,7 @@ apiRouter.post('/auth/signup', async (req, res) => {
       companyName ? companyName.trim() : `${cleanName}'s Studio`
     );
 
-    // 4. Retrieve authoritative Supabase access token
+    // 4. Retrieve authoritative Supabase access token & set secure cookie
     let token = authData.session?.access_token;
     if (!token) {
       const { data: signInData } = await supabase.auth.signInWithPassword({
@@ -107,7 +108,6 @@ apiRouter.post('/auth/signup', async (req, res) => {
       }
     }
 
-    // Set cookie if token is available
     if (token) {
       res.cookie('ic_token', token, {
         httpOnly: true,
@@ -120,7 +120,6 @@ apiRouter.post('/auth/signup', async (req, res) => {
     const workspace = await getWorkspaceSnapshot(user.id, organization.id);
 
     return res.status(201).json({
-      token: token || '',
       user: {
         id: user.id,
         email: user.email,
@@ -185,7 +184,7 @@ apiRouter.post('/auth/login', async (req, res) => {
       organization = created.organization;
     }
 
-    // Set cookie
+    // 4. Set httpOnly session cookie
     res.cookie('ic_token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
@@ -196,7 +195,6 @@ apiRouter.post('/auth/login', async (req, res) => {
     const workspace = await getWorkspaceSnapshot(user.id, organization.id);
 
     return res.json({
-      token,
       user: {
         id: user.id,
         email: user.email,
@@ -636,7 +634,7 @@ apiRouter.patch('/reminders/:id', requireAuth, requireOrgMember, async (req: Aut
   }
 });
 
-apiRouter.post('/reminders/:id/approve', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+const handleApproveReminder = async (req: AuthenticatedRequest, res: any) => {
   try {
     const senderEmail = req.user?.email || 'accounts@yourbusiness.com';
     const sent = await approveAndSendReminder(req.organizationId!, req.params.id, senderEmail);
@@ -652,10 +650,17 @@ apiRouter.post('/reminders/:id/approve', requireAuth, requireOrgMember, async (r
     return res.json(sent);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to send reminder.';
+    const code = (err as any)?.code;
     console.error('Approve reminder error:', msg);
+    if (code === 'INTEGRATION_REQUIRED') {
+      return res.status(422).json({ error: msg, code });
+    }
     return res.status(500).json({ error: msg });
   }
-});
+};
+
+apiRouter.post('/reminders/:id/approve', requireAuth, requireOrgMember, handleApproveReminder);
+apiRouter.post('/reminders/:id/approve-and-send', requireAuth, requireOrgMember, handleApproveReminder);
 
 apiRouter.post('/reminders/:id/cancel', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
@@ -665,6 +670,82 @@ apiRouter.post('/reminders/:id/cancel', requireAuth, requireOrgMember, async (re
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to cancel reminder.';
     console.error('Cancel reminder error:', msg);
+    return res.status(500).json({ error: msg });
+  }
+});
+
+/* -------------------------------------------------------------
+   AI REMINDER GENERATION (Server-Side, Tenant-Scoped & Fact-Verified)
+------------------------------------------------------------- */
+apiRouter.post('/gemini/generate-reminder', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  try {
+    const {
+      invoiceId,
+      invoiceNumber,
+      clientName,
+      companyName,
+      amount,
+      currency,
+      dueDate,
+      daysOverdue,
+      sequenceNumber,
+      relationshipType,
+      communicationStyle,
+      customInstructions,
+    } = req.body;
+
+    let targetInvoiceNumber = invoiceNumber;
+    let targetClientName = clientName;
+    let targetCompanyName = companyName || 'Our Business';
+    let targetAmountFormatted = amount ? `${currency || '₹'}${Number(amount).toLocaleString('en-IN')}` : '';
+    let targetDueDate = dueDate;
+    let targetDaysOverdue = Number(daysOverdue) || 0;
+    let targetRelationship = relationshipType || 'REGULAR';
+    const targetSeq = (Number(sequenceNumber) as 1 | 2 | 3) || 1;
+
+    // If invoiceId is provided, authoritatively resolve from database
+    if (invoiceId) {
+      const invoice = await getInvoiceById(req.organizationId!, invoiceId);
+      if (!invoice) {
+        return res.status(404).json({ error: 'Invoice not found in your organization.' });
+      }
+      targetInvoiceNumber = invoice.invoiceNumber;
+      targetClientName = invoice.clientName;
+      targetAmountFormatted = `${invoice.currency} ${invoice.invoiceAmount.toLocaleString('en-IN')}`;
+      targetDueDate = invoice.dueDate;
+      targetDaysOverdue = invoice.daysOverdue;
+
+      if (invoice.clientId) {
+        const client = await getClientById(req.organizationId!, invoice.clientId);
+        if (client) {
+          targetRelationship = client.relationshipType || 'REGULAR';
+        }
+      }
+    }
+
+    if (!targetInvoiceNumber || !targetClientName) {
+      return res.status(400).json({
+        error: 'Invoice details or valid invoiceId required to generate reminder draft.',
+      });
+    }
+
+    const draft = await generateReminderDraft({
+      invoiceNumber: targetInvoiceNumber,
+      clientName: targetClientName,
+      companyName: targetCompanyName,
+      amountFormatted: targetAmountFormatted || '₹0',
+      dueDateFormatted: targetDueDate || new Date().toISOString().substring(0, 10),
+      daysOverdue: targetDaysOverdue,
+      sequenceNumber: targetSeq,
+      relationshipType: targetRelationship,
+      tone: communicationStyle || 'PROFESSIONAL',
+      customInstructions: customInstructions ? String(customInstructions).slice(0, 500) : undefined,
+    });
+
+    return res.json(draft);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'AI Generation failed.';
+    console.error('Gemini generation endpoint error:', msg);
     return res.status(500).json({ error: msg });
   }
 });

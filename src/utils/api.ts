@@ -1,30 +1,10 @@
 /**
  * InvoiceChaser AI - Authoritative Backend API Client
- * Sends authenticated requests to Express / Supabase backend.
+ * Uses secure httpOnly session cookies for authentication.
+ * No access tokens are stored in localStorage.
  */
 
-const TOKEN_KEY = 'ic_auth_token';
 const ORG_KEY = 'ic_active_org_id';
-
-export function getStoredToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function setStoredToken(token: string | null) {
-  try {
-    if (token) {
-      localStorage.setItem(TOKEN_KEY, token);
-    } else {
-      localStorage.removeItem(TOKEN_KEY);
-    }
-  } catch (err) {
-    console.error('Error saving auth token:', err);
-  }
-}
 
 export function getStoredOrgId(): string | null {
   try {
@@ -51,17 +31,12 @@ interface RequestOptions extends RequestInit {
 }
 
 export async function apiRequest<T = any>(endpoint: string, options: RequestOptions = {}): Promise<T> {
-  const token = getStoredToken();
   const activeOrgId = options.orgId || getStoredOrgId();
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(options.headers as Record<string, string>),
   };
-
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
-  }
 
   if (activeOrgId) {
     headers['x-organization-id'] = activeOrgId;
@@ -70,19 +45,24 @@ export async function apiRequest<T = any>(endpoint: string, options: RequestOpti
   const url = endpoint.startsWith('/') ? endpoint : `/api/${endpoint}`;
 
   const response = await fetch(url, {
+    credentials: 'same-origin',
     ...options,
     headers,
   });
 
   if (!response.ok) {
     let errorMessage = `API error (${response.status})`;
+    let errorCode: string | undefined;
     try {
       const errorBody = await response.json();
       errorMessage = errorBody.error || errorBody.message || errorMessage;
+      errorCode = errorBody.code;
     } catch {
-      // ignore JSON parse error
+      // ignore non-JSON error
     }
-    throw new Error(errorMessage);
+    const err = new Error(errorMessage);
+    if (errorCode) (err as any).code = errorCode;
+    throw err;
   }
 
   return response.json();
