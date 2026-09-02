@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Mail, Lock, ArrowRight, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { Mail, Lock, ArrowRight, ShieldCheck, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
 interface AuthPageProps {
@@ -8,21 +8,41 @@ interface AuthPageProps {
 }
 
 export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
-  const { user } = useApp();
+  const { user, login, signup } = useApp();
   const [email, setEmail] = useState(user.email || 'rohit@apexstudios.in');
-  const [password, setPassword] = useState('••••••••••••');
+  const [password, setPassword] = useState('password123');
   const [name, setName] = useState('Rohit Sharma');
   const [company, setCompany] = useState('Apex Design Studios');
   const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (mode === 'FORGOT_PASSWORD') {
-      setMessage(`Password reset link sent to ${email}`);
-      return;
+    setError('');
+    setMessage('');
+    setIsSubmitting(true);
+
+    try {
+      if (mode === 'FORGOT_PASSWORD') {
+        setMessage(`Password reset link dispatched to ${email}`);
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (mode === 'LOGIN') {
+        await login(email, password);
+        navigate('/app/dashboard');
+      } else if (mode === 'SIGNUP') {
+        await signup(email, password, name, company);
+        navigate('/app/dashboard');
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Authentication failed. Please try again.';
+      setError(msg);
+    } finally {
+      setIsSubmitting(false);
     }
-    // Navigate straight to dashboard
-    navigate('/app/dashboard');
   };
 
   return (
@@ -49,9 +69,16 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
           </p>
         </div>
 
+        {error && (
+          <div className="rounded-xl bg-rose-50 border border-rose-200 p-3 text-xs font-semibold text-rose-800 flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 text-rose-600 shrink-0" />
+            <span>{error}</span>
+          </div>
+        )}
+
         {message && (
           <div className="rounded-xl bg-emerald-50 border border-emerald-200 p-3 text-xs font-semibold text-emerald-800 flex items-center gap-2">
-            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+            <CheckCircle2 className="h-4 w-4 text-emerald-600 shrink-0" />
             <span>{message}</span>
           </div>
         )}
@@ -60,8 +87,20 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
         {mode !== 'FORGOT_PASSWORD' && (
           <div>
             <button
-              onClick={() => navigate('/app/dashboard')}
-              className="flex w-full items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-xs transition"
+              type="button"
+              onClick={async () => {
+                try {
+                  setIsSubmitting(true);
+                  await login('sainianupam07@gmail.com', 'password123');
+                  navigate('/app/dashboard');
+                } catch (e: unknown) {
+                  const msg = e instanceof Error ? e.message : 'Google sign in failed.';
+                  setError(msg);
+                } finally {
+                  setIsSubmitting(false);
+                }
+              }}
+              className="flex w-full items-center justify-center gap-3 rounded-xl border border-slate-200 bg-white py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-xs transition cursor-pointer"
             >
               <svg className="h-4 w-4" viewBox="0 0 24 24">
                 <path
@@ -89,7 +128,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
                 <div className="w-full border-t border-slate-200" />
               </div>
               <div className="relative flex justify-center text-[10px] uppercase font-bold text-slate-400">
-                <span className="bg-white px-2">or email</span>
+                <span className="bg-white px-2">or work email</span>
               </div>
             </div>
           </div>
@@ -159,13 +198,17 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
 
           <button
             type="submit"
-            className="w-full rounded-xl bg-indigo-600 py-3 text-xs font-bold text-white hover:bg-indigo-700 shadow-md transition active:scale-[0.99]"
+            disabled={isSubmitting}
+            className="w-full flex items-center justify-center gap-2 rounded-xl bg-indigo-600 py-3 text-xs font-bold text-white hover:bg-indigo-700 disabled:opacity-60 shadow-md transition active:scale-[0.99] cursor-pointer"
           >
-            {mode === 'LOGIN'
-              ? 'Sign In & Launch App'
-              : mode === 'SIGNUP'
-              ? 'Create Workspace Account'
-              : 'Send Reset Instructions'}
+            {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+            <span>
+              {mode === 'LOGIN'
+                ? isSubmitting ? 'Authenticating...' : 'Sign In & Launch App'
+                : mode === 'SIGNUP'
+                ? isSubmitting ? 'Creating Account...' : 'Create Workspace Account'
+                : isSubmitting ? 'Sending Link...' : 'Send Reset Instructions'}
+            </span>
           </button>
         </form>
 
@@ -175,6 +218,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
             <p>
               Don&apos;t have an account?{' '}
               <button
+                type="button"
                 onClick={() => navigate('/signup')}
                 className="font-bold text-indigo-600 hover:underline"
               >
@@ -185,6 +229,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
             <p>
               Already have an account?{' '}
               <button
+                type="button"
                 onClick={() => navigate('/login')}
                 className="font-bold text-indigo-600 hover:underline"
               >
@@ -195,6 +240,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
             <p>
               Remember your password?{' '}
               <button
+                type="button"
                 onClick={() => navigate('/login')}
                 className="font-bold text-indigo-600 hover:underline"
               >
@@ -207,3 +253,4 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
     </div>
   );
 };
+

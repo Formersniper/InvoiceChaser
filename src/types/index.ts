@@ -259,6 +259,7 @@ export interface Usage {
   month: string; // e.g. "2026-09"
   activeInvoicesCount: number;
   remindersSentCount: number;
+  remindersSentThisMonth?: number;
   aiGenerationsCount: number;
   connectedGmailAccounts: number;
 }

@@ -1,8 +1,10 @@
 import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
+import cookieParser from 'cookie-parser';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+import { apiRouter } from './server/routes/api';
 
 dotenv.config();
 
@@ -10,6 +12,10 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+app.use(cookieParser());
+
+// Mount the comprehensive multi-tenant API routes
+app.use('/api', apiRouter);
 
 // Initialize Gemini SDK with User-Agent header as specified in guidelines
 const geminiApiKey = process.env.GEMINI_API_KEY || '';

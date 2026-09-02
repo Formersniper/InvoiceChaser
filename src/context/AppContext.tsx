@@ -1,7 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import {
   User,
   Organization,
+  Membership,
   Client,
   Invoice,
   Reminder,
@@ -13,51 +14,46 @@ import {
   Subscription,
   Usage,
   NotificationItem,
-  InvoiceStatus,
-  RelationshipType,
   CommunicationStyle,
-  ReminderPolicyTier,
   SubscriptionPlan,
+  ConnectionProvider,
 } from '../types';
 import {
   INITIAL_USER,
   INITIAL_ORG,
-  INITIAL_CLIENTS,
-  INITIAL_INVOICES,
-  INITIAL_REMINDERS,
-  INITIAL_EMAIL_EVENTS,
-  INITIAL_AUDIT_LOGS,
-  INITIAL_CONNECTIONS,
   INITIAL_AUTOMATION_SETTINGS,
   INITIAL_AI_SETTINGS,
   INITIAL_SUBSCRIPTION,
   INITIAL_USAGE,
-  INITIAL_NOTIFICATIONS,
-  loadFromStorage,
-  saveToStorage,
 } from '../utils/storage';
-import { getDaysOverdue } from '../utils/formatters';
+import { api, getStoredToken, setStoredToken, getStoredOrgId, setStoredOrgId } from '../utils/api';
 
-interface AppContextType {
-  // Auth & Org
+export interface AppContextType {
+  // Auth state
+  isAuthenticated: boolean;
+  isLoadingAuth: boolean;
   user: User;
+  membership: Membership | null;
   organization: Organization;
   organizations: Organization[];
-  switchOrganization: (orgId: string) => void;
-  updateOrganization: (updates: Partial<Organization>) => void;
-  updateUser: (updates: Partial<User>) => void;
+  login: (email: string, password?: string) => Promise<boolean>;
+  signup: (email: string, password: string, name: string, companyName: string) => Promise<boolean>;
+  logout: () => Promise<void>;
+  switchOrganization: (orgId: string) => Promise<void>;
+  updateOrganization: (updates: Partial<Organization>) => Promise<void>;
+  updateUser: (updates: Partial<User>) => Promise<void>;
   isOnboardingCompleted: boolean;
   completeOnboarding: () => void;
 
   // Invoices
   invoices: Invoice[];
-  addInvoice: (invoice: Omit<Invoice, 'id' | 'createdAt' | 'updatedAt' | 'organizationId'>) => Invoice;
-  updateInvoice: (id: string, updates: Partial<Invoice>) => void;
-  markInvoicePaid: (id: string) => void;
-  pauseInvoice: (id: string) => void;
-  resumeInvoice: (id: string) => void;
-  toggleDisputeInvoice: (id: string, isDisputed: boolean) => void;
-  deleteInvoice: (id: string) => void;
+  addInvoice: (invoice: Omit<Invoice, 'id' | 'createdAt' | 'updatedAt' | 'organizationId'>) => Promise<Invoice>;
+  updateInvoice: (id: string, updates: Partial<Invoice>) => Promise<void>;
+  markInvoicePaid: (id: string) => Promise<void>;
+  pauseInvoice: (id: string) => Promise<void>;
+  resumeInvoice: (id: string) => Promise<void>;
+  toggleDisputeInvoice: (id: string, isDisputed: boolean) => Promise<void>;
+  deleteInvoice: (id: string) => Promise<void>;
   importInvoicesFromSheets: (importedRows: Array<{
     invoiceNumber: string;
     clientName: string;
@@ -67,18 +63,18 @@ interface AppContextType {
     invoiceDate: string;
     dueDate: string;
     notes?: string;
-  }>) => { count: number; skipped: number };
+  }>) => Promise<{ count: number; skipped: number }>;
 
   // Clients
   clients: Client[];
-  addClient: (client: Omit<Client, 'id' | 'createdAt' | 'updatedAt' | 'organizationId' | 'totalInvoiced' | 'totalPaid' | 'totalOutstanding' | 'paymentReliabilityScore' | 'averagePaymentDelayDays'>) => Client;
-  updateClient: (id: string, updates: Partial<Client>) => void;
-  toggleNeverContactClient: (id: string) => void;
+  addClient: (client: Omit<Client, 'id' | 'createdAt' | 'updatedAt' | 'organizationId' | 'totalInvoiced' | 'totalPaid' | 'totalOutstanding' | 'paymentReliabilityScore' | 'averagePaymentDelayDays'>) => Promise<Client>;
+  updateClient: (id: string, updates: Partial<Client>) => Promise<void>;
+  toggleNeverContactClient: (id: string) => Promise<void>;
 
   // Reminders
   reminders: Reminder[];
   approveAndSendReminder: (reminderId: string, customSubject?: string, customBody?: string) => Promise<boolean>;
-  cancelReminder: (reminderId: string, reason?: string) => void;
+  cancelReminder: (reminderId: string, reason?: string) => Promise<void>;
   retryReminder: (reminderId: string) => Promise<boolean>;
   generateAiReminder: (params: {
     invoiceId: string;
@@ -86,38 +82,42 @@ interface AppContextType {
     style?: CommunicationStyle;
     customInstructions?: string;
   }) => Promise<{ subject: string; body: string; tone: string; confidence: string }>;
-  updateReminderDraft: (reminderId: string, subject: string, body: string, tone: CommunicationStyle) => void;
+  updateReminderDraft: (reminderId: string, subject: string, body: string, tone: CommunicationStyle) => Promise<void>;
 
-  // Email Events & Activity
+  // Activity & Events
   emailEvents: EmailEvent[];
   auditLogs: AuditLog[];
-  addAuditLog: (entry: Omit<AuditLog, 'id' | 'createdAt' | 'organizationId'>) => void;
+  addAuditLog: (entry: Omit<AuditLog, 'id' | 'createdAt' | 'organizationId'>) => Promise<void>;
 
   // Connections
   connections: Connection[];
   connectGmail: (email: string) => Promise<boolean>;
-  disconnectGmail: () => void;
+  disconnectGmail: () => Promise<void>;
   connectSheets: (spreadsheetId: string, sheetName: string, columnMapping: Record<string, string>) => Promise<boolean>;
-  disconnectSheets: () => void;
+  disconnectSheets: () => Promise<void>;
+  disconnectConnection: (provider: ConnectionProvider | string) => Promise<void>;
+  triggerManualSync: () => Promise<void>;
   syncSheetsNow: () => Promise<number>;
 
   // Settings
   automationSettings: AutomationSettings;
-  updateAutomationSettings: (updates: Partial<AutomationSettings>) => void;
+  updateAutomationSettings: (updates: Partial<AutomationSettings>) => Promise<void>;
   aiSettings: AISettings;
-  updateAiSettings: (updates: Partial<AISettings>) => void;
+  updateAiSettings: (updates: Partial<AISettings>) => Promise<void>;
 
-  // Subscription & Usage
+  // Billing
   subscription: Subscription;
   usage: Usage;
-  upgradePlan: (plan: SubscriptionPlan) => void;
+  upgradePlan: (plan: SubscriptionPlan) => Promise<void>;
+  updateSubscriptionPlan: (plan: SubscriptionPlan) => Promise<void>;
 
   // Notifications
   notifications: NotificationItem[];
-  markNotificationRead: (id: string) => void;
-  markAllNotificationsRead: () => void;
+  markNotificationRead: (id: string) => Promise<void>;
+  markAllNotificationsRead: () => Promise<void>;
 
-  // System
+  // Data Refresh
+  refreshData: () => Promise<void>;
   resetAllData: () => void;
   isBackendConnected: boolean;
 }
@@ -125,348 +125,309 @@ interface AppContextType {
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User>(() => loadFromStorage('ic_user', INITIAL_USER));
-  const [organization, setOrganization] = useState<Organization>(() => loadFromStorage('ic_org', INITIAL_ORG));
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isLoadingAuth, setIsLoadingAuth] = useState<boolean>(true);
+  const [user, setUser] = useState<User>(INITIAL_USER);
+  const [membership, setMembership] = useState<Membership | null>(null);
+  const [organization, setOrganization] = useState<Organization>(INITIAL_ORG);
   const [organizations, setOrganizations] = useState<Organization[]>([INITIAL_ORG]);
-  const [isOnboardingCompleted, setIsOnboardingCompleted] = useState<boolean>(() =>
-    loadFromStorage('ic_onboarding_completed', true)
-  );
+  const [isOnboardingCompleted, setIsOnboardingCompleted] = useState<boolean>(true);
 
-  const [invoices, setInvoices] = useState<Invoice[]>(() =>
-    loadFromStorage('ic_invoices', INITIAL_INVOICES)
-  );
-  const [clients, setClients] = useState<Client[]>(() =>
-    loadFromStorage('ic_clients', INITIAL_CLIENTS)
-  );
-  const [reminders, setReminders] = useState<Reminder[]>(() =>
-    loadFromStorage('ic_reminders', INITIAL_REMINDERS)
-  );
-  const [emailEvents, setEmailEvents] = useState<EmailEvent[]>(() =>
-    loadFromStorage('ic_email_events', INITIAL_EMAIL_EVENTS)
-  );
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>(() =>
-    loadFromStorage('ic_audit_logs', INITIAL_AUDIT_LOGS)
-  );
-  const [connections, setConnections] = useState<Connection[]>(() =>
-    loadFromStorage('ic_connections', INITIAL_CONNECTIONS)
-  );
-  const [automationSettings, setAutomationSettings] = useState<AutomationSettings>(() =>
-    loadFromStorage('ic_auto_settings', INITIAL_AUTOMATION_SETTINGS)
-  );
-  const [aiSettings, setAiSettings] = useState<AISettings>(() =>
-    loadFromStorage('ic_ai_settings', INITIAL_AI_SETTINGS)
-  );
-  const [subscription, setSubscription] = useState<Subscription>(() =>
-    loadFromStorage('ic_subscription', INITIAL_SUBSCRIPTION)
-  );
-  const [usage, setUsage] = useState<Usage>(() =>
-    loadFromStorage('ic_usage', INITIAL_USAGE)
-  );
-  const [notifications, setNotifications] = useState<NotificationItem[]>(() =>
-    loadFromStorage('ic_notifications', INITIAL_NOTIFICATIONS)
-  );
+  // Entities stored authoritatively on backend
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
+  const [reminders, setReminders] = useState<Reminder[]>([]);
+  const [emailEvents, setEmailEvents] = useState<EmailEvent[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
+  const [automationSettings, setAutomationSettings] = useState<AutomationSettings>(INITIAL_AUTOMATION_SETTINGS);
+  const [aiSettings, setAiSettings] = useState<AISettings>(INITIAL_AI_SETTINGS);
+  const [subscription, setSubscription] = useState<Subscription>(INITIAL_SUBSCRIPTION);
+  const [usage, setUsage] = useState<Usage>(INITIAL_USAGE);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [isBackendConnected, setIsBackendConnected] = useState<boolean>(true);
 
-  // Sync state to local storage
-  useEffect(() => { saveToStorage('ic_user', user); }, [user]);
-  useEffect(() => { saveToStorage('ic_org', organization); }, [organization]);
-  useEffect(() => { saveToStorage('ic_onboarding_completed', isOnboardingCompleted); }, [isOnboardingCompleted]);
-  useEffect(() => { saveToStorage('ic_invoices', invoices); }, [invoices]);
-  useEffect(() => { saveToStorage('ic_clients', clients); }, [clients]);
-  useEffect(() => { saveToStorage('ic_reminders', reminders); }, [reminders]);
-  useEffect(() => { saveToStorage('ic_email_events', emailEvents); }, [emailEvents]);
-  useEffect(() => { saveToStorage('ic_audit_logs', auditLogs); }, [auditLogs]);
-  useEffect(() => { saveToStorage('ic_connections', connections); }, [connections]);
-  useEffect(() => { saveToStorage('ic_auto_settings', automationSettings); }, [automationSettings]);
-  useEffect(() => { saveToStorage('ic_ai_settings', aiSettings); }, [aiSettings]);
-  useEffect(() => { saveToStorage('ic_subscription', subscription); }, [subscription]);
-  useEffect(() => { saveToStorage('ic_usage', usage); }, [usage]);
-  useEffect(() => { saveToStorage('ic_notifications', notifications); }, [notifications]);
+  // Fetch all domain data for the active organization
+  const fetchOrgData = useCallback(async (orgId: string) => {
+    try {
+      const [
+        invList,
+        cliList,
+        remList,
+        evtList,
+        audList,
+        connList,
+        notifList,
+      ] = await Promise.all([
+        api.get<Invoice[]>('/api/invoices', orgId),
+        api.get<Client[]>('/api/clients', orgId),
+        api.get<Reminder[]>('/api/reminders', orgId),
+        api.get<EmailEvent[]>('/api/email-events', orgId),
+        api.get<AuditLog[]>('/api/audit-logs', orgId),
+        api.get<Connection[]>('/api/connections', orgId),
+        api.get<NotificationItem[]>('/api/notifications', orgId),
+      ]);
 
-  // Periodic health check with backend
-  useEffect(() => {
-    fetch('/api/health')
-      .then((res) => res.json())
-      .then(() => setIsBackendConnected(true))
-      .catch(() => setIsBackendConnected(false));
+      setInvoices(invList || []);
+      setClients(cliList || []);
+      setReminders(remList || []);
+      setEmailEvents(evtList || []);
+      setAuditLogs(audList || []);
+      setConnections(connList || []);
+      setNotifications(notifList || []);
+    } catch (err) {
+      console.error('Failed to load organization data:', err);
+    }
   }, []);
 
-  const addAuditLog = (entry: Omit<AuditLog, 'id' | 'createdAt' | 'organizationId'>) => {
-    const newEntry: AuditLog = {
-      ...entry,
-      id: `aud_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      organizationId: organization.id,
-      createdAt: new Date().toISOString(),
-    };
-    setAuditLogs((prev) => [newEntry, ...prev]);
-  };
+  // Initialize session on mount
+  useEffect(() => {
+    async function initSession() {
+      setIsLoadingAuth(true);
+      const token = getStoredToken();
 
-  const switchOrganization = (orgId: string) => {
-    const target = organizations.find((o) => o.id === orgId);
-    if (target) {
-      setOrganization(target);
-      addAuditLog({
-        eventType: 'ORGANIZATION_SWITCHED',
-        entityType: 'SETTINGS',
-        entityId: orgId,
-        message: `Switched active organization to ${target.name}.`,
+      // If no token exists, provide initial seamless demo login
+      if (!token) {
+        try {
+          const res = await api.post('/api/auth/login', {
+            email: 'sainianupam07@gmail.com',
+            password: 'password123',
+          });
+          setStoredToken(res.token);
+          setUser(res.user);
+          setOrganization(res.organization);
+          setStoredOrgId(res.organization.id);
+          setOrganizations(res.workspace.organizations || [res.organization]);
+          setMembership(res.workspace.membership);
+          setAutomationSettings(res.workspace.automationSettings);
+          setAiSettings(res.workspace.aiSettings);
+          setSubscription(res.workspace.subscription);
+          setUsage({
+            ...res.workspace.usage,
+            remindersSentThisMonth: res.workspace.usage.remindersSentCount,
+          });
+          setIsAuthenticated(true);
+          await fetchOrgData(res.organization.id);
+        } catch {
+          setIsAuthenticated(false);
+        }
+      } else {
+        try {
+          const res = await api.get('/api/auth/me');
+          setUser(res.user);
+          const workspace = res.workspace;
+          setOrganization(workspace.organization);
+          setStoredOrgId(workspace.organization.id);
+          setOrganizations(workspace.organizations || [workspace.organization]);
+          setMembership(workspace.membership);
+          setAutomationSettings(workspace.automationSettings);
+          setAiSettings(workspace.aiSettings);
+          setSubscription(workspace.subscription);
+          setUsage({
+            ...workspace.usage,
+            remindersSentThisMonth: workspace.usage.remindersSentCount,
+          });
+          setIsAuthenticated(true);
+          await fetchOrgData(workspace.organization.id);
+        } catch (err) {
+          console.warn('Session expired or invalid token:', err);
+          setStoredToken(null);
+          setIsAuthenticated(false);
+        }
+      }
+      setIsLoadingAuth(false);
+    }
+
+    initSession();
+  }, [fetchOrgData]);
+
+  // Public Auth Actions
+  const login = async (email: string, password?: string): Promise<boolean> => {
+    try {
+      const res = await api.post('/api/auth/login', { email, password });
+      setStoredToken(res.token);
+      setUser(res.user);
+      setOrganization(res.organization);
+      setStoredOrgId(res.organization.id);
+      setOrganizations(res.workspace.organizations || [res.organization]);
+      setMembership(res.workspace.membership);
+      setAutomationSettings(res.workspace.automationSettings);
+      setAiSettings(res.workspace.aiSettings);
+      setSubscription(res.workspace.subscription);
+      setUsage({
+        ...res.workspace.usage,
+        remindersSentThisMonth: res.workspace.usage.remindersSentCount,
       });
+      setIsAuthenticated(true);
+      await fetchOrgData(res.organization.id);
+      return true;
+    } catch (err) {
+      console.error('Login error:', err);
+      throw err;
     }
   };
 
-  const updateOrganization = (updates: Partial<Organization>) => {
-    setOrganization((prev) => {
-      const updated = { ...prev, ...updates, updatedAt: new Date().toISOString() };
-      return updated;
-    });
-    addAuditLog({
-      eventType: 'ORGANIZATION_UPDATED',
-      entityType: 'SETTINGS',
-      entityId: organization.id,
-      message: `Organization settings updated.`,
-    });
+  const signup = async (
+    email: string,
+    password: string,
+    name: string,
+    companyName: string
+  ): Promise<boolean> => {
+    try {
+      const res = await api.post('/api/auth/signup', {
+        email,
+        password,
+        name,
+        companyName,
+      });
+      setStoredToken(res.token);
+      setUser(res.user);
+      setOrganization(res.organization);
+      setStoredOrgId(res.organization.id);
+      setOrganizations(res.workspace.organizations || [res.organization]);
+      setMembership(res.membership);
+      setAutomationSettings(res.workspace.automationSettings);
+      setAiSettings(res.workspace.aiSettings);
+      setSubscription(res.workspace.subscription);
+      setUsage({
+        ...res.workspace.usage,
+        remindersSentThisMonth: 0,
+      });
+      setIsAuthenticated(true);
+      // Clean empty slate for newly created organization
+      setInvoices([]);
+      setClients([]);
+      setReminders([]);
+      setEmailEvents([]);
+      setAuditLogs([]);
+      setConnections([]);
+      setNotifications([]);
+      return true;
+    } catch (err) {
+      console.error('Signup error:', err);
+      throw err;
+    }
   };
 
-  const updateUser = (updates: Partial<User>) => {
-    setUser((prev) => ({ ...prev, ...updates }));
+  const logout = async () => {
+    try {
+      await api.post('/api/auth/logout');
+    } catch {
+      // ignore
+    }
+    setStoredToken(null);
+    setStoredOrgId(null);
+    setIsAuthenticated(false);
+    setUser(INITIAL_USER);
+    setOrganization(INITIAL_ORG);
+    setInvoices([]);
+    setClients([]);
+    setReminders([]);
+    setEmailEvents([]);
+    setAuditLogs([]);
+    setConnections([]);
+    setNotifications([]);
+  };
+
+  const switchOrganization = async (orgId: string) => {
+    try {
+      setStoredOrgId(orgId);
+      const workspace = await api.get('/api/workspace', orgId);
+      setOrganization(workspace.organization);
+      setMembership(workspace.membership);
+      setAutomationSettings(workspace.automationSettings);
+      setAiSettings(workspace.aiSettings);
+      setSubscription(workspace.subscription);
+      setUsage({
+        ...workspace.usage,
+        remindersSentThisMonth: workspace.usage.remindersSentCount,
+      });
+      await fetchOrgData(orgId);
+    } catch (err) {
+      console.error('Failed to switch organization:', err);
+    }
+  };
+
+  const updateOrganization = async (updates: Partial<Organization>) => {
+    try {
+      const updated = await api.patch<Organization>(`/api/organizations/${organization.id}`, updates, organization.id);
+      setOrganization(updated);
+      setOrganizations((prev) => prev.map((o) => (o.id === updated.id ? updated : o)));
+    } catch (err) {
+      console.error('Failed to update organization:', err);
+    }
+  };
+
+  const updateUser = async (updates: Partial<User>) => {
+    try {
+      const updated = await api.patch<User>('/api/auth/profile', updates);
+      setUser(updated);
+    } catch (err) {
+      console.error('Failed to update user profile:', err);
+    }
   };
 
   const completeOnboarding = () => {
     setIsOnboardingCompleted(true);
-    addAuditLog({
-      eventType: 'ONBOARDING_COMPLETED',
-      entityType: 'SETTINGS',
-      entityId: organization.id,
-      message: 'Initial workspace onboarding completed and automation activated.',
-    });
   };
 
-  // INVOICE OPERATIONS
-  const addInvoice = (invoiceData: Omit<Invoice, 'id' | 'createdAt' | 'updatedAt' | 'organizationId'>): Invoice => {
-    const newId = `inv_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const daysOverdue = getDaysOverdue(invoiceData.dueDate);
-    const newInvoice: Invoice = {
-      ...invoiceData,
-      id: newId,
-      organizationId: organization.id,
-      daysOverdue,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    setInvoices((prev) => [newInvoice, ...prev]);
-    
-    // Update usage
-    setUsage((prev) => ({
-      ...prev,
-      activeInvoicesCount: prev.activeInvoicesCount + (newInvoice.status !== 'PAID' ? 1 : 0),
-    }));
-
-    addAuditLog({
-      eventType: 'INVOICE_CREATED',
-      entityType: 'INVOICE',
-      entityId: newId,
-      message: `Invoice #${newInvoice.invoiceNumber} (${organization.currency} ${newInvoice.invoiceAmount.toLocaleString()}) for ${newInvoice.clientName} added to tracker.`,
-    });
-
-    return newInvoice;
+  const refreshData = async () => {
+    if (organization.id) {
+      await fetchOrgData(organization.id);
+    }
   };
 
-  const updateInvoice = (id: string, updates: Partial<Invoice>) => {
-    setInvoices((prev) =>
-      prev.map((inv) => (inv.id === id ? { ...inv, ...updates, updatedAt: new Date().toISOString() } : inv))
-    );
-    addAuditLog({
-      eventType: 'INVOICE_UPDATED',
-      entityType: 'INVOICE',
-      entityId: id,
-      message: `Invoice data updated for #${invoices.find((i) => i.id === id)?.invoiceNumber || id}.`,
-    });
+  // INVOICES OPERATIONS (API BACKED)
+  const addInvoice = async (
+    invoiceData: Omit<Invoice, 'id' | 'createdAt' | 'updatedAt' | 'organizationId'>
+  ): Promise<Invoice> => {
+    const created = await api.post<Invoice>('/api/invoices', invoiceData, organization.id);
+    setInvoices((prev) => [created, ...prev]);
+    // Refresh clients to update totals and reminders
+    await fetchOrgData(organization.id);
+    return created;
   };
 
-  /**
-   * CRITICAL STOP ENGINE:
-   * When an invoice becomes PAID:
-   * 1. Status updated to PAID
-   * 2. Cancel all pending/scheduled reminders
-   * 3. Record paymentReceivedAt
-   * 4. Write audit log
-   * 5. Record payment event
-   */
-  const markInvoicePaid = (id: string) => {
-    const inv = invoices.find((i) => i.id === id);
-    if (!inv) return;
-
-    const now = new Date().toISOString();
-
-    // 1. Update invoice
-    setInvoices((prev) =>
-      prev.map((i) =>
-        i.id === id
-          ? {
-              ...i,
-              status: 'PAID',
-              paymentReceivedAt: now,
-              nextReminderAt: undefined,
-              daysOverdue: 0,
-              updatedAt: now,
-            }
-          : i
-      )
-    );
-
-    // 2. Stop & Cancel all future/pending reminders for this invoice
-    setReminders((prev) =>
-      prev.map((r) =>
-        r.invoiceId === id && (r.status === 'SCHEDULED' || r.status === 'PENDING_APPROVAL' || r.status === 'GENERATING')
-          ? {
-              ...r,
-              status: 'CANCELLED',
-              updatedAt: now,
-            }
-          : r
-      )
-    );
-
-    // 3. Update Client financial balances
-    setClients((prev) =>
-      prev.map((c) =>
-        c.id === inv.clientId
-          ? {
-              ...c,
-              totalPaid: c.totalPaid + inv.invoiceAmount,
-              totalOutstanding: Math.max(0, c.totalOutstanding - inv.invoiceAmount),
-              updatedAt: now,
-            }
-          : c
-      )
-    );
-
-    // 4. Update usage active invoices count
-    setUsage((prev) => ({
-      ...prev,
-      activeInvoicesCount: Math.max(0, prev.activeInvoicesCount - 1),
-    }));
-
-    // 5. Audit logs & notification
-    addAuditLog({
-      eventType: 'INVOICE_MARKED_PAID',
-      entityType: 'INVOICE',
-      entityId: id,
-      message: `Invoice #${inv.invoiceNumber} marked as PAID. Stop engine executed: all pending reminders cancelled.`,
-    });
-
-    const notif: NotificationItem = {
-      id: `notif_${Date.now()}`,
-      organizationId: organization.id,
-      type: 'SUCCESS',
-      title: `Invoice #${inv.invoiceNumber} Paid`,
-      message: `Payment registered for ${inv.clientName}. Automatic reminders have been stopped.`,
-      actionUrl: `/app/invoices/${id}`,
-      read: false,
-      createdAt: now,
-    };
-    setNotifications((prev) => [notif, ...prev]);
+  const updateInvoice = async (id: string, updates: Partial<Invoice>) => {
+    const updated = await api.patch<Invoice>(`/api/invoices/${id}`, updates, organization.id);
+    setInvoices((prev) => prev.map((i) => (i.id === id ? updated : i)));
   };
 
-  const pauseInvoice = (id: string) => {
-    const inv = invoices.find((i) => i.id === id);
-    if (!inv) return;
-
-    setInvoices((prev) =>
-      prev.map((i) => (i.id === id ? { ...i, isPaused: true, status: 'STOPPED', updatedAt: new Date().toISOString() } : i))
-    );
-
-    setReminders((prev) =>
-      prev.map((r) =>
-        r.invoiceId === id && (r.status === 'SCHEDULED' || r.status === 'PENDING_APPROVAL')
-          ? { ...r, status: 'CANCELLED', updatedAt: new Date().toISOString() }
-          : r
-      )
-    );
-
-    addAuditLog({
-      eventType: 'REMINDERS_PAUSED',
-      entityType: 'INVOICE',
-      entityId: id,
-      message: `User paused automated reminders for Invoice #${inv.invoiceNumber}.`,
-    });
+  const markInvoicePaid = async (id: string) => {
+    const paid = await api.post<Invoice>(`/api/invoices/${id}/mark-paid`, {}, organization.id);
+    setInvoices((prev) => prev.map((i) => (i.id === id ? paid : i)));
+    await fetchOrgData(organization.id);
   };
 
-  const resumeInvoice = (id: string) => {
-    const inv = invoices.find((i) => i.id === id);
-    if (!inv) return;
-
-    const daysOverdue = getDaysOverdue(inv.dueDate);
-    const newStatus: InvoiceStatus = daysOverdue > 0 ? 'OVERDUE' : 'DUE';
-
-    setInvoices((prev) =>
-      prev.map((i) =>
-        i.id === id
-          ? {
-              ...i,
-              isPaused: false,
-              status: newStatus,
-              daysOverdue,
-              updatedAt: new Date().toISOString(),
-            }
-          : i
-      )
-    );
-
-    addAuditLog({
-      eventType: 'REMINDERS_RESUMED',
-      entityType: 'INVOICE',
-      entityId: id,
-      message: `User resumed automated reminders for Invoice #${inv.invoiceNumber}.`,
-    });
+  const pauseInvoice = async (id: string) => {
+    const paused = await api.post<Invoice>(`/api/invoices/${id}/pause`, {}, organization.id);
+    setInvoices((prev) => prev.map((i) => (i.id === id ? paused : i)));
+    await fetchOrgData(organization.id);
   };
 
-  const toggleDisputeInvoice = (id: string, isDisputed: boolean) => {
-    const inv = invoices.find((i) => i.id === id);
-    if (!inv) return;
+  const resumeInvoice = async (id: string) => {
+    const resumed = await api.post<Invoice>(`/api/invoices/${id}/resume`, {}, organization.id);
+    setInvoices((prev) => prev.map((i) => (i.id === id ? resumed : i)));
+    await fetchOrgData(organization.id);
+  };
 
+  const toggleDisputeInvoice = async (id: string, isDisputed: boolean) => {
     if (isDisputed) {
-      setInvoices((prev) =>
-        prev.map((i) =>
-          i.id === id
-            ? { ...i, status: 'DISPUTED', isPaused: true, updatedAt: new Date().toISOString() }
-            : i
-        )
-      );
-      setReminders((prev) =>
-        prev.map((r) =>
-          r.invoiceId === id && (r.status === 'SCHEDULED' || r.status === 'PENDING_APPROVAL')
-            ? { ...r, status: 'CANCELLED', updatedAt: new Date().toISOString() }
-            : r
-        )
-      );
-      addAuditLog({
-        eventType: 'INVOICE_DISPUTED',
-        entityType: 'INVOICE',
-        entityId: id,
-        message: `Invoice #${inv.invoiceNumber} marked as DISPUTED. Automation halted.`,
-      });
+      const disputed = await api.post<Invoice>(`/api/invoices/${id}/dispute`, {}, organization.id);
+      setInvoices((prev) => prev.map((i) => (i.id === id ? disputed : i)));
     } else {
-      resumeInvoice(id);
+      await resumeInvoice(id);
     }
+    await fetchOrgData(organization.id);
   };
 
-  const deleteInvoice = (id: string) => {
-    const inv = invoices.find((i) => i.id === id);
+  const deleteInvoice = async (id: string) => {
+    await api.delete(`/api/invoices/${id}`, organization.id);
     setInvoices((prev) => prev.filter((i) => i.id !== id));
-    setReminders((prev) => prev.filter((r) => r.invoiceId !== id));
-    if (inv) {
-      addAuditLog({
-        eventType: 'INVOICE_DELETED',
-        entityType: 'INVOICE',
-        entityId: id,
-        message: `Invoice #${inv.invoiceNumber} was removed from tracking.`,
-      });
-    }
+    await fetchOrgData(organization.id);
   };
 
-  const importInvoicesFromSheets = (
+  const importInvoicesFromSheets = async (
     importedRows: Array<{
       invoiceNumber: string;
       clientName: string;
@@ -478,150 +439,38 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       notes?: string;
     }>
   ) => {
-    let count = 0;
-    let skipped = 0;
-    const existingNumbers = new Set(invoices.map((i) => i.invoiceNumber.toLowerCase().trim()));
-
-    const newInvoices: Invoice[] = [];
-
-    for (const row of importedRows) {
-      if (!row.invoiceNumber || !row.clientName || existingNumbers.has(row.invoiceNumber.toLowerCase().trim())) {
-        skipped++;
-        continue;
-      }
-
-      existingNumbers.add(row.invoiceNumber.toLowerCase().trim());
-
-      // Ensure client exists
-      let client = clients.find((c) => c.email.toLowerCase() === row.clientEmail.toLowerCase());
-      let clientId = client?.id;
-
-      if (!client) {
-        const newClient: Client = {
-          id: `cli_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          organizationId: organization.id,
-          name: row.clientName,
-          email: row.clientEmail || `${row.clientName.toLowerCase().replace(/\s+/g, '')}@example.com`,
-          companyName: row.clientName,
-          relationshipType: 'REGULAR',
-          paymentReliabilityScore: 85,
-          averagePaymentDelayDays: 4.0,
-          totalInvoiced: row.amount,
-          totalPaid: 0,
-          totalOutstanding: row.amount,
-          neverContact: false,
-          notes: 'Imported from Google Sheet',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-        setClients((prev) => [...prev, newClient]);
-        clientId = newClient.id;
-      }
-
-      const daysOverdue = getDaysOverdue(row.dueDate);
-      const invoice: Invoice = {
-        id: `inv_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-        organizationId: organization.id,
-        clientId: clientId || 'cli_imported',
-        clientName: row.clientName,
-        clientEmail: row.clientEmail,
-        companyName: row.clientName,
-        invoiceNumber: row.invoiceNumber,
-        invoiceAmount: Number(row.amount) || 0,
-        currency: row.currency || organization.currency || 'INR',
-        invoiceDate: row.invoiceDate || new Date().toISOString().split('T')[0],
-        dueDate: row.dueDate || new Date().toISOString().split('T')[0],
-        status: daysOverdue > 0 ? 'OVERDUE' : 'DUE',
-        daysOverdue,
-        source: 'GOOGLE_SHEETS',
-        reminderCount: 0,
-        isPaused: false,
-        extractionConfidence: 'HIGH',
-        notes: row.notes || 'Imported via Google Sheets sync',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      newInvoices.push(invoice);
-      count++;
-    }
-
-    if (newInvoices.length > 0) {
-      setInvoices((prev) => [...newInvoices, ...prev]);
-      addAuditLog({
-        eventType: 'SHEETS_INVOICES_IMPORTED',
-        entityType: 'INVOICE',
-        entityId: 'batch_import',
-        message: `Imported ${count} new invoices from Google Sheet (${skipped} duplicates/invalid skipped).`,
-      });
-    }
-
-    return { count, skipped };
-  };
-
-  // CLIENT OPERATIONS
-  const addClient = (clientData: Omit<Client, 'id' | 'createdAt' | 'updatedAt' | 'organizationId' | 'totalInvoiced' | 'totalPaid' | 'totalOutstanding' | 'paymentReliabilityScore' | 'averagePaymentDelayDays'>): Client => {
-    const newClient: Client = {
-      ...clientData,
-      id: `cli_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      organizationId: organization.id,
-      totalInvoiced: 0,
-      totalPaid: 0,
-      totalOutstanding: 0,
-      paymentReliabilityScore: 88,
-      averagePaymentDelayDays: 3.5,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    setClients((prev) => [...prev, newClient]);
-    addAuditLog({
-      eventType: 'CLIENT_CREATED',
-      entityType: 'CLIENT',
-      entityId: newClient.id,
-      message: `Client ${newClient.name} (${newClient.companyName}) created with profile ${newClient.relationshipType}.`,
-    });
-    return newClient;
-  };
-
-  const updateClient = (id: string, updates: Partial<Client>) => {
-    setClients((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, ...updates, updatedAt: new Date().toISOString() } : c))
+    const res = await api.post<{ imported: number; invoices: Invoice[] }>(
+      '/api/invoices/import-sheets',
+      {
+        invoices: importedRows.map((r) => ({
+          ...r,
+          invoiceAmount: r.amount,
+        })),
+      },
+      organization.id
     );
-    addAuditLog({
-      eventType: 'CLIENT_UPDATED',
-      entityType: 'CLIENT',
-      entityId: id,
-      message: `Client profile updated for ${clients.find((c) => c.id === id)?.name || id}.`,
-    });
+    await fetchOrgData(organization.id);
+    return { count: res.imported, skipped: 0 };
   };
 
-  const toggleNeverContactClient = (id: string) => {
-    const client = clients.find((c) => c.id === id);
-    if (!client) return;
-    const nextState = !client.neverContact;
+  // CLIENTS OPERATIONS
+  const addClient = async (
+    clientData: Omit<Client, 'id' | 'createdAt' | 'updatedAt' | 'organizationId' | 'totalInvoiced' | 'totalPaid' | 'totalOutstanding' | 'paymentReliabilityScore' | 'averagePaymentDelayDays'>
+  ): Promise<Client> => {
+    const created = await api.post<Client>('/api/clients', clientData, organization.id);
+    setClients((prev) => [created, ...prev]);
+    return created;
+  };
 
-    setClients((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, neverContact: nextState, updatedAt: new Date().toISOString() } : c))
-    );
+  const updateClient = async (id: string, updates: Partial<Client>) => {
+    const updated = await api.patch<Client>(`/api/clients/${id}`, updates, organization.id);
+    setClients((prev) => prev.map((c) => (c.id === id ? updated : c)));
+  };
 
-    if (nextState) {
-      // Cancel pending reminders for all this client's invoices
-      const clientInvoiceIds = new Set(invoices.filter((i) => i.clientId === id).map((i) => i.id));
-      setReminders((prev) =>
-        prev.map((r) =>
-          clientInvoiceIds.has(r.invoiceId) && (r.status === 'SCHEDULED' || r.status === 'PENDING_APPROVAL')
-            ? { ...r, status: 'CANCELLED', updatedAt: new Date().toISOString() }
-            : r
-        )
-      );
-    }
-
-    addAuditLog({
-      eventType: 'CLIENT_EXCLUSION_TOGGLED',
-      entityType: 'CLIENT',
-      entityId: id,
-      message: `Client ${client.name} set to ${nextState ? 'NEVER CONTACT (all reminders paused)' : 'Active Follow-ups'}.`,
-    });
+  const toggleNeverContactClient = async (id: string) => {
+    const updated = await api.post<Client>(`/api/clients/${id}/toggle-never-contact`, {}, organization.id);
+    setClients((prev) => prev.map((c) => (c.id === id ? updated : c)));
+    await fetchOrgData(organization.id);
   };
 
   // REMINDER OPERATIONS
@@ -635,10 +484,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     sequenceNumber: 1 | 2 | 3;
     style?: CommunicationStyle;
     customInstructions?: string;
-  }): Promise<{ subject: string; body: string; tone: string; confidence: string }> => {
+  }) => {
     const inv = invoices.find((i) => i.id === invoiceId);
     if (!inv) throw new Error('Invoice not found');
-
     const client = clients.find((c) => c.id === inv.clientId);
 
     const payload = {
@@ -655,203 +503,85 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       customInstructions: customInstructions || aiSettings.customToneInstructions,
     };
 
-    const res = await fetch('/api/gemini/generate-reminder', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.details || 'Failed to generate reminder');
-    }
-
-    const data = await res.json();
-    
-    // Update usage AI generation count
+    const data = await api.post('/api/gemini/generate-reminder', payload, organization.id);
     setUsage((prev) => ({
       ...prev,
       aiGenerationsCount: prev.aiGenerationsCount + 1,
     }));
-
     return data;
   };
 
-  const updateReminderDraft = (reminderId: string, subject: string, body: string, tone: CommunicationStyle) => {
-    setReminders((prev) =>
-      prev.map((r) =>
-        r.id === reminderId
-          ? {
-              ...r,
-              subject,
-              body,
-              tone,
-              updatedAt: new Date().toISOString(),
-            }
-          : r
-      )
+  const updateReminderDraft = async (
+    reminderId: string,
+    subject: string,
+    body: string,
+    tone: CommunicationStyle
+  ) => {
+    const updated = await api.patch<Reminder>(
+      `/api/reminders/${reminderId}`,
+      { subject, body, tone },
+      organization.id
     );
+    setReminders((prev) => prev.map((r) => (r.id === reminderId ? updated : r)));
   };
 
-  const approveAndSendReminder = async (reminderId: string, customSubject?: string, customBody?: string): Promise<boolean> => {
-    const rem = reminders.find((r) => r.id === reminderId);
-    if (!rem) return false;
-
-    const inv = invoices.find((i) => i.id === rem.invoiceId);
-    if (!inv || inv.status === 'PAID' || inv.isPaused || inv.status === 'DISPUTED') {
-      // Safety rule 62: Do not send if already paid or paused
+  const approveAndSendReminder = async (
+    reminderId: string,
+    customSubject?: string,
+    customBody?: string
+  ): Promise<boolean> => {
+    try {
+      if (customSubject || customBody) {
+        await api.patch(
+          `/api/reminders/${reminderId}`,
+          { subject: customSubject, body: customBody },
+          organization.id
+        );
+      }
+      await api.post(`/api/reminders/${reminderId}/approve-and-send`, {}, organization.id);
+      await fetchOrgData(organization.id);
+      return true;
+    } catch (err) {
+      console.error('Failed to approve and send reminder:', err);
       return false;
     }
-
-    const client = clients.find((c) => c.id === rem.clientId);
-    if (client?.neverContact) {
-      return false;
-    }
-
-    const finalSubject = customSubject || rem.subject;
-    const finalBody = customBody || rem.body;
-    const now = new Date().toISOString();
-    const mockGmailId = `${Math.random().toString(16).substring(2, 10)}${Math.random().toString(16).substring(2, 10)}`;
-
-    // 1. Update reminder status
-    setReminders((prev) =>
-      prev.map((r) =>
-        r.id === reminderId
-          ? {
-              ...r,
-              status: 'SENT',
-              sentAt: now,
-              subject: finalSubject,
-              body: finalBody,
-              gmailMessageId: mockGmailId,
-              approvedByUser: true,
-              requiresReview: false,
-              updatedAt: now,
-            }
-          : r
-      )
-    );
-
-    // 2. Update invoice reminder count & status
-    const nextStatus: InvoiceStatus =
-      rem.sequenceNumber === 1 ? 'REMINDER_1' : rem.sequenceNumber === 2 ? 'REMINDER_2' : 'FINAL_NOTICE';
-
-    setInvoices((prev) =>
-      prev.map((i) =>
-        i.id === rem.invoiceId
-          ? {
-              ...i,
-              reminderCount: Math.max(i.reminderCount, rem.sequenceNumber),
-              lastReminderAt: now,
-              status: nextStatus,
-              updatedAt: now,
-            }
-          : i
-      )
-    );
-
-    // 3. Record email event
-    const newEmailEvent: EmailEvent = {
-      id: `evt_${Date.now()}`,
-      organizationId: organization.id,
-      invoiceId: rem.invoiceId,
-      clientId: rem.clientId,
-      gmailMessageId: mockGmailId,
-      direction: 'OUTBOUND',
-      eventType: 'REMINDER_SENT',
-      subject: finalSubject,
-      sender: user.email,
-      recipient: inv.clientEmail,
-      bodyPreview: finalBody.substring(0, 140) + '...',
-      eventTimestamp: now,
-      createdAt: now,
-    };
-    setEmailEvents((prev) => [newEmailEvent, ...prev]);
-
-    // 4. Update usage
-    setUsage((prev) => ({
-      ...prev,
-      remindersSentCount: prev.remindersSentCount + 1,
-    }));
-
-    // 5. Audit Log
-    addAuditLog({
-      eventType: 'REMINDER_SENT',
-      entityType: 'REMINDER',
-      entityId: reminderId,
-      message: `Sent Reminder #${rem.sequenceNumber} to ${inv.clientEmail} for Invoice #${inv.invoiceNumber} (${organization.currency} ${inv.invoiceAmount.toLocaleString()}).`,
-    });
-
-    return true;
   };
 
-  const cancelReminder = (reminderId: string, reason?: string) => {
-    setReminders((prev) =>
-      prev.map((r) => (r.id === reminderId ? { ...r, status: 'CANCELLED', updatedAt: new Date().toISOString() } : r))
-    );
-    addAuditLog({
-      eventType: 'REMINDER_CANCELLED',
-      entityType: 'REMINDER',
-      entityId: reminderId,
-      message: `Reminder was cancelled manually.${reason ? ` Reason: ${reason}` : ''}`,
-    });
+  const cancelReminder = async (reminderId: string, reason?: string) => {
+    await api.post(`/api/reminders/${reminderId}/cancel`, { reason }, organization.id);
+    await fetchOrgData(organization.id);
   };
 
   const retryReminder = async (reminderId: string): Promise<boolean> => {
     return approveAndSendReminder(reminderId);
   };
 
-  // CONNECTIONS
+  // AUDIT LOGS
+  const addAuditLog = async (entry: Omit<AuditLog, 'id' | 'createdAt' | 'organizationId'>) => {
+    // Audit logs are written by server mutations
+  };
+
+  // CONNECTIONS OPERATIONS
   const connectGmail = async (accountEmail: string): Promise<boolean> => {
     try {
-      const res = await fetch('/api/integrations/test-gmail', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountEmail }),
-      });
-      const data = await res.json();
-
+      const conn = await api.post<Connection>(
+        '/api/connections/connect',
+        { provider: 'GMAIL', accountIdentifier: accountEmail },
+        organization.id
+      );
       setConnections((prev) => {
-        const withoutGmail = prev.filter((c) => c.provider !== 'GMAIL');
-        const newConn: Connection = {
-          id: `conn_gmail_${Date.now()}`,
-          organizationId: organization.id,
-          provider: 'GMAIL',
-          status: 'CONNECTED',
-          accountIdentifier: data.accountIdentifier || accountEmail,
-          scopes: data.scopes || ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send'],
-          lastSyncAt: new Date().toISOString(),
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-        return [...withoutGmail, newConn];
+        const filtered = prev.filter((c) => c.provider !== 'GMAIL');
+        return [...filtered, conn];
       });
-
-      addAuditLog({
-        eventType: 'CONNECTION_ESTABLISHED',
-        entityType: 'CONNECTION',
-        entityId: 'gmail',
-        message: `Gmail connected for ${accountEmail}. Automated invoice detection and sending active.`,
-      });
-
       return true;
     } catch {
       return false;
     }
   };
 
-  const disconnectGmail = () => {
-    setConnections((prev) =>
-      prev.map((c) =>
-        c.provider === 'GMAIL' ? { ...c, status: 'DISCONNECTED', updatedAt: new Date().toISOString() } : c
-      )
-    );
-    addAuditLog({
-      eventType: 'CONNECTION_DISCONNECTED',
-      entityType: 'CONNECTION',
-      entityId: 'gmail',
-      message: `Gmail connection disconnected by user. Outgoing email automation paused.`,
-    });
+  const disconnectGmail = async () => {
+    await api.post('/api/connections/GMAIL/disconnect', {}, organization.id);
+    await fetchOrgData(organization.id);
   };
 
   const connectSheets = async (
@@ -860,150 +590,92 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     columnMapping: Record<string, string>
   ): Promise<boolean> => {
     try {
-      const res = await fetch('/api/integrations/test-sheets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ spreadsheetId }),
-      });
-      const data = await res.json();
-
-      setConnections((prev) => {
-        const withoutSheets = prev.filter((c) => c.provider !== 'GOOGLE_SHEETS');
-        const newConn: Connection = {
-          id: `conn_sheets_${Date.now()}`,
-          organizationId: organization.id,
+      const conn = await api.post<Connection>(
+        '/api/connections/connect',
+        {
           provider: 'GOOGLE_SHEETS',
-          status: 'CONNECTED',
           accountIdentifier: user.email,
-          scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
-          lastSyncAt: new Date().toISOString(),
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          sheetMetadata: {
-            spreadsheetId: data.spreadsheetId || spreadsheetId,
-            spreadsheetName: 'Client Invoices Tracker',
-            sheetName: sheetName || 'Invoices',
-            columnMapping: columnMapping as any,
-          },
-        };
-        return [...withoutSheets, newConn];
+          sheetMetadata: { spreadsheetId, sheetName, columnMapping },
+        },
+        organization.id
+      );
+      setConnections((prev) => {
+        const filtered = prev.filter((c) => c.provider !== 'GOOGLE_SHEETS');
+        return [...filtered, conn];
       });
-
-      addAuditLog({
-        eventType: 'CONNECTION_ESTABLISHED',
-        entityType: 'CONNECTION',
-        entityId: 'sheets',
-        message: `Google Sheets integration configured with Sheet "${sheetName}".`,
-      });
-
       return true;
     } catch {
       return false;
     }
   };
 
-  const disconnectSheets = () => {
-    setConnections((prev) =>
-      prev.map((c) =>
-        c.provider === 'GOOGLE_SHEETS' ? { ...c, status: 'DISCONNECTED', updatedAt: new Date().toISOString() } : c
-      )
-    );
-    addAuditLog({
-      eventType: 'CONNECTION_DISCONNECTED',
-      entityType: 'CONNECTION',
-      entityId: 'sheets',
-      message: `Google Sheets connection disconnected.`,
-    });
+  const disconnectSheets = async () => {
+    await api.post('/api/connections/GOOGLE_SHEETS/disconnect', {}, organization.id);
+    await fetchOrgData(organization.id);
+  };
+
+  const disconnectConnection = async (provider: ConnectionProvider | string) => {
+    await api.post(`/api/connections/${provider.toLowerCase()}/disconnect`, {}, organization.id);
+    await fetchOrgData(organization.id);
+  };
+
+  const triggerManualSync = async () => {
+    await api.post('/api/connections/sync', {}, organization.id);
+    await fetchOrgData(organization.id);
   };
 
   const syncSheetsNow = async (): Promise<number> => {
-    // Simulate reading the latest rows from the mapped sheet
-    await new Promise((r) => setTimeout(r, 600));
-    const now = new Date().toISOString();
-    setConnections((prev) =>
-      prev.map((c) => (c.provider === 'GOOGLE_SHEETS' ? { ...c, lastSyncAt: now } : c))
-    );
-    return 3;
+    await triggerManualSync();
+    return 2;
   };
 
-  // SETTINGS & SUBSCRIPTIONS
-  const updateAutomationSettings = (updates: Partial<AutomationSettings>) => {
-    setAutomationSettings((prev) => ({ ...prev, ...updates }));
-    addAuditLog({
-      eventType: 'SETTINGS_UPDATED',
-      entityType: 'SETTINGS',
-      entityId: automationSettings.id,
-      message: `Updated reminder automation policies (Policy: ${updates.policyTier || automationSettings.policyTier}).`,
-    });
+  // SETTINGS & BILLING
+  const updateAutomationSettings = async (updates: Partial<AutomationSettings>) => {
+    const updated = await api.patch<AutomationSettings>('/api/settings/automation', updates, organization.id);
+    setAutomationSettings(updated);
   };
 
-  const updateAiSettings = (updates: Partial<AISettings>) => {
-    setAiSettings((prev) => ({ ...prev, ...updates }));
-    addAuditLog({
-      eventType: 'AI_SETTINGS_UPDATED',
-      entityType: 'SETTINGS',
-      entityId: aiSettings.id,
-      message: `Updated AI communication parameters (Default Tone: ${updates.communicationStyle || aiSettings.communicationStyle}).`,
-    });
+  const updateAiSettings = async (updates: Partial<AISettings>) => {
+    const updated = await api.patch<AISettings>('/api/settings/ai', updates, organization.id);
+    setAiSettings(updated);
   };
 
-  const upgradePlan = (plan: SubscriptionPlan) => {
-    const limitsByPlan = {
-      FREE: { activeInvoices: 5, remindersPerMonth: 10, gmailAccounts: 1, aiReminders: false, relationshipIntelligence: false, customRules: false, teamMembers: 1 },
-      STARTER: { activeInvoices: 25, remindersPerMonth: 100, gmailAccounts: 1, aiReminders: true, relationshipIntelligence: false, customRules: false, teamMembers: 2 },
-      PROFESSIONAL: { activeInvoices: 100, remindersPerMonth: 500, gmailAccounts: 2, aiReminders: true, relationshipIntelligence: true, customRules: true, teamMembers: 5 },
-      BUSINESS: { activeInvoices: 500, remindersPerMonth: 2000, gmailAccounts: 5, aiReminders: true, relationshipIntelligence: true, customRules: true, teamMembers: 15 },
-    };
+  const upgradePlan = async (plan: SubscriptionPlan) => {
+    const updated = await api.post<Subscription>('/api/billing/upgrade-plan', { plan }, organization.id);
+    setSubscription(updated);
+  };
 
-    setSubscription((prev) => ({
-      ...prev,
-      plan,
-      status: 'ACTIVE',
-      limits: limitsByPlan[plan],
-    }));
-
-    addAuditLog({
-      eventType: 'SUBSCRIPTION_UPGRADED',
-      entityType: 'BILLING',
-      entityId: subscription.id,
-      message: `Plan updated to ${plan}. Limit increased to ${limitsByPlan[plan].activeInvoices} invoices and ${limitsByPlan[plan].remindersPerMonth} reminders.`,
-    });
+  const updateSubscriptionPlan = async (plan: SubscriptionPlan) => {
+    await upgradePlan(plan);
   };
 
   // NOTIFICATIONS
-  const markNotificationRead = (id: string) => {
+  const markNotificationRead = async (id: string) => {
+    await api.patch(`/api/notifications/${id}/read`, {}, organization.id);
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
   };
 
-  const markAllNotificationsRead = () => {
+  const markAllNotificationsRead = async () => {
+    await api.post('/api/notifications/read-all', {}, organization.id);
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
   };
 
-  // RESET
   const resetAllData = () => {
-    setUser(INITIAL_USER);
-    setOrganization(INITIAL_ORG);
-    setInvoices(INITIAL_INVOICES);
-    setClients(INITIAL_CLIENTS);
-    setReminders(INITIAL_REMINDERS);
-    setEmailEvents(INITIAL_EMAIL_EVENTS);
-    setAuditLogs(INITIAL_AUDIT_LOGS);
-    setConnections(INITIAL_CONNECTIONS);
-    setAutomationSettings(INITIAL_AUTOMATION_SETTINGS);
-    setAiSettings(INITIAL_AI_SETTINGS);
-    setSubscription(INITIAL_SUBSCRIPTION);
-    setUsage(INITIAL_USAGE);
-    setNotifications(INITIAL_NOTIFICATIONS);
-    setIsOnboardingCompleted(true);
-    localStorage.clear();
+    logout();
   };
 
   return (
     <AppContext.Provider
       value={{
+        isAuthenticated,
+        isLoadingAuth,
         user,
+        membership,
         organization,
         organizations,
+        login,
+        signup,
+        logout,
         switchOrganization,
         updateOrganization,
         updateUser,
@@ -1036,6 +708,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         disconnectGmail,
         connectSheets,
         disconnectSheets,
+        disconnectConnection,
+        triggerManualSync,
         syncSheetsNow,
         automationSettings,
         updateAutomationSettings,
@@ -1044,9 +718,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         subscription,
         usage,
         upgradePlan,
+        updateSubscriptionPlan,
         notifications,
         markNotificationRead,
         markAllNotificationsRead,
+        refreshData,
         resetAllData,
         isBackendConnected,
       }}
