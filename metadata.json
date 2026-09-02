@@ -1,0 +1,7 @@
+{
+  "name": "InvoiceChaser AI",
+  "description": "AI-powered accounts-receivable follow-up assistant that tracks unpaid invoices and automates relationship-aware payment reminders.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
