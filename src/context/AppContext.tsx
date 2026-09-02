@@ -362,7 +362,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const markInvoicePaid = async (id: string) => {
-    const paid = await api.post<Invoice>(`/api/invoices/${id}/mark-paid`, {}, organization.id);
+    const res = await api.post<{ success: boolean; invoice: Invoice; message?: string }>(
+      `/api/invoices/${id}/mark-paid`,
+      {},
+      organization.id
+    );
+    const paid = res.invoice;
     setInvoices((prev) => prev.map((i) => (i.id === id ? paid : i)));
     await fetchOrgData(organization.id);
   };
@@ -455,18 +460,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   }) => {
     const inv = invoices.find((i) => i.id === invoiceId);
     if (!inv) throw new Error('Invoice not found');
-    const client = clients.find((c) => c.id === inv.clientId);
 
     const payload = {
-      invoiceNumber: inv.invoiceNumber,
-      clientName: inv.clientName,
-      companyName: organization.name,
-      amount: inv.invoiceAmount,
-      currency: inv.currency,
-      dueDate: inv.dueDate,
-      daysOverdue: inv.daysOverdue,
+      invoiceId: inv.id,
       sequenceNumber,
-      relationshipType: client?.relationshipType || 'REGULAR',
       communicationStyle: style || aiSettings.communicationStyle,
       customInstructions: customInstructions || aiSettings.customToneInstructions,
     };

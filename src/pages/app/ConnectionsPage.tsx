@@ -5,10 +5,7 @@ import {
   CheckCircle2,
   AlertCircle,
   RefreshCw,
-  Trash2,
-  ExternalLink,
-  ShieldCheck,
-  Zap,
+  Info,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { formatDate } from '../../utils/formatters';
@@ -17,21 +14,30 @@ export const ConnectionsPage: React.FC = () => {
   const {
     connections,
     user,
-    connectGmail,
     disconnectConnection,
     triggerManualSync,
   } = useApp();
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [disconnectModalTarget, setDisconnectModalTarget] = useState<string | null>(null);
+  const [oauthNotice, setOauthNotice] = useState<string | null>(null);
 
   const gmailConn = connections.find((c) => c.provider === 'GMAIL');
   const sheetsConn = connections.find((c) => c.provider === 'GOOGLE_SHEETS');
 
   const handleSyncAll = async () => {
     setIsSyncing(true);
-    await triggerManualSync();
-    setTimeout(() => setIsSyncing(false), 1200);
+    try {
+      await triggerManualSync();
+    } catch {
+      // Ignored
+    } finally {
+      setTimeout(() => setIsSyncing(false), 800);
+    }
+  };
+
+  const handleConnectClick = (provider: string) => {
+    setOauthNotice(`Live ${provider} OAuth integration is scheduled for IC-V1.0.4. Fake authorization tokens have been disabled for production security.`);
   };
 
   return (
@@ -54,6 +60,21 @@ export const ConnectionsPage: React.FC = () => {
           <span>{isSyncing ? 'Synchronizing…' : 'Sync All Now'}</span>
         </button>
       </div>
+
+      {oauthNotice && (
+        <div className="rounded-xl border border-indigo-200 bg-indigo-50/80 p-4 flex items-start justify-between gap-3 text-xs text-indigo-900">
+          <div className="flex items-start gap-2">
+            <Info className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5" />
+            <span>{oauthNotice}</span>
+          </div>
+          <button
+            onClick={() => setOauthNotice(null)}
+            className="text-xs font-bold text-indigo-700 hover:text-indigo-900"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Integration Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -86,12 +107,16 @@ export const ConnectionsPage: React.FC = () => {
             <div className="mt-5 space-y-2 rounded-xl bg-slate-50 p-3.5 text-xs">
               <div className="flex justify-between">
                 <span className="text-slate-500">Connected Account:</span>
-                <span className="font-semibold text-slate-800">{gmailConn?.accountEmail || user.email}</span>
+                <span className="font-semibold text-slate-800">
+                  {gmailConn?.status === 'CONNECTED' ? (gmailConn.accountIdentifier || user.email) : 'None (OAuth Required)'}
+                </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500">Last Synced:</span>
+                <span className="text-slate-500">Status:</span>
                 <span className="font-medium text-slate-700">
-                  {gmailConn?.lastSyncAt ? formatDate(gmailConn.lastSyncAt) : 'Active'}
+                  {gmailConn?.status === 'CONNECTED' && gmailConn?.lastSyncAt
+                    ? `Active (${formatDate(gmailConn.lastSyncAt)})`
+                    : 'Scheduled for IC-V1.0.4'}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -111,7 +136,7 @@ export const ConnectionsPage: React.FC = () => {
               </button>
             ) : (
               <button
-                onClick={() => connectGmail(user.email)}
+                onClick={() => handleConnectClick('Gmail')}
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700 transition"
               >
                 Connect Gmail
@@ -148,18 +173,20 @@ export const ConnectionsPage: React.FC = () => {
 
             <div className="mt-5 space-y-2 rounded-xl bg-slate-50 p-3.5 text-xs">
               <div className="flex justify-between">
-                <span className="text-slate-500">Target Spreadsheet:</span>
+                <span className="text-slate-500">Connected Account:</span>
                 <span className="font-semibold text-slate-800 truncate max-w-[180px]">
-                  {sheetsConn?.spreadsheetName || 'Apex_Studio_Invoices_FY26'}
+                  {sheetsConn?.status === 'CONNECTED' ? (sheetsConn.accountIdentifier || user.email) : 'None (OAuth Required)'}
                 </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500">Active Worksheet:</span>
-                <span className="font-semibold text-slate-800">{sheetsConn?.worksheetName || 'Active Invoices'}</span>
+                <span className="text-slate-500">Status:</span>
+                <span className="font-semibold text-slate-800">
+                  {sheetsConn?.status === 'CONNECTED' ? 'Active' : 'Scheduled for IC-V1.0.4'}
+                </span>
               </div>
               <div className="flex justify-between">
-                <span className="text-slate-500">Sync Interval:</span>
-                <span className="font-medium text-slate-700">Every 15 minutes</span>
+                <span className="text-slate-500">OAuth Scopes:</span>
+                <span className="font-mono text-[11px] text-slate-600">spreadsheets.readonly</span>
               </div>
             </div>
           </div>
@@ -174,7 +201,7 @@ export const ConnectionsPage: React.FC = () => {
               </button>
             ) : (
               <button
-                onClick={() => {}}
+                onClick={() => handleConnectClick('Google Sheets')}
                 className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-bold text-white hover:bg-emerald-700 transition"
               >
                 Connect Sheets

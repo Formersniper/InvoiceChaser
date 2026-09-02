@@ -106,7 +106,8 @@ CREATE TABLE IF NOT EXISTS public.reminders (
   requires_review BOOLEAN NOT NULL DEFAULT TRUE,
   last_error TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT unique_reminder_sequence_per_invoice UNIQUE (organization_id, invoice_id, sequence_number)
 );
 
 -- 7. EMAIL EVENTS

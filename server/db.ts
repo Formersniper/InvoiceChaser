@@ -16,6 +16,7 @@ import {
   NotificationItem,
   SubscriptionPlan,
   PlanLimits,
+  CommunicationStyle,
 } from '../src/types';
 
 // ============================================================================
@@ -878,46 +879,30 @@ export async function createInvoice(
   return created;
 }
 
-export async function updateInvoice(
+/**
+ * Internal invoice updater for authoritative server-side workflows
+ */
+export async function updateInvoiceInternal(
   orgId: string,
   id: string,
-  updates: Partial<Invoice>
+  payload: Record<string, any>
 ): Promise<Invoice> {
   const supabase = getSupabase();
-  const payload: Record<string, any> = {
+  const updatePayload = {
+    ...payload,
     updated_at: new Date().toISOString(),
   };
 
-  if (updates.clientName !== undefined) payload.client_name = updates.clientName;
-  if (updates.clientEmail !== undefined) payload.client_email = updates.clientEmail;
-  if (updates.companyName !== undefined) payload.company_name = updates.companyName;
-  if (updates.invoiceNumber !== undefined) payload.invoice_number = updates.invoiceNumber;
-  if (updates.invoiceAmount !== undefined) payload.invoice_amount = updates.invoiceAmount;
-  if (updates.currency !== undefined) payload.currency = updates.currency;
-  if (updates.invoiceDate !== undefined) payload.invoice_date = updates.invoiceDate;
-  if (updates.dueDate !== undefined) payload.due_date = updates.dueDate;
-  if (updates.status !== undefined) payload.status = updates.status;
-  if (updates.daysOverdue !== undefined) payload.days_overdue = updates.daysOverdue;
-  if (updates.source !== undefined) payload.source = updates.source;
-  if (updates.sourceReference !== undefined) payload.source_reference = updates.sourceReference;
-  if (updates.lastReminderAt !== undefined) payload.last_reminder_at = updates.lastReminderAt;
-  if (updates.reminderCount !== undefined) payload.reminder_count = updates.reminderCount;
-  if (updates.nextReminderAt !== undefined) payload.next_reminder_at = updates.nextReminderAt;
-  if (updates.paymentReceivedAt !== undefined) payload.payment_received_at = updates.paymentReceivedAt;
-  if (updates.isPaused !== undefined) payload.is_paused = updates.isPaused;
-  if (updates.extractionConfidence !== undefined) payload.extraction_confidence = updates.extractionConfidence;
-  if (updates.notes !== undefined) payload.notes = updates.notes;
-
   const { data, error } = await supabase
     .from('invoices')
-    .update(payload)
+    .update(updatePayload)
     .eq('organization_id', orgId)
     .eq('id', id)
     .select('*')
     .single();
 
   if (error || !data) {
-    throw new Error(`Failed to update invoice: ${error?.message}`);
+    throw new Error('Failed to update invoice in database.');
   }
 
   const updated = mapInvoice(data);
@@ -926,6 +911,31 @@ export async function updateInvoice(
   }
 
   return updated;
+}
+
+/**
+ * Generic PATCH /invoices/:id MUST NOT allow client-controlled mutation of authoritative workflow fields.
+ * Strips or rejects: status, daysOverdue, reminderCount, lastReminderAt, nextReminderAt, paymentReceivedAt, isPaused.
+ */
+export async function updateInvoice(
+  orgId: string,
+  id: string,
+  updates: Partial<Invoice>
+): Promise<Invoice> {
+  const payload: Record<string, any> = {};
+
+  if (updates.clientName !== undefined) payload.client_name = updates.clientName;
+  if (updates.clientEmail !== undefined) payload.client_email = updates.clientEmail;
+  if (updates.companyName !== undefined) payload.company_name = updates.companyName;
+  if (updates.invoiceNumber !== undefined) payload.invoice_number = updates.invoiceNumber;
+  if (updates.invoiceAmount !== undefined) payload.invoice_amount = Number(updates.invoiceAmount);
+  if (updates.currency !== undefined) payload.currency = updates.currency;
+  if (updates.invoiceDate !== undefined) payload.invoice_date = updates.invoiceDate;
+  if (updates.dueDate !== undefined) payload.due_date = updates.dueDate;
+  if (updates.notes !== undefined) payload.notes = updates.notes;
+  if (updates.clientId !== undefined) payload.client_id = updates.clientId;
+
+  return updateInvoiceInternal(orgId, id, payload);
 }
 
 export async function deleteInvoice(orgId: string, id: string): Promise<void> {
@@ -1028,12 +1038,16 @@ export async function pauseInvoice(orgId: string, id: string): Promise<Invoice> 
   const inv = await getInvoiceById(orgId, id);
   if (!inv) throw new Error('Invoice not found.');
 
-  // If already PAID or DISPUTED, preserve status while setting is_paused
-  if (inv.status === 'PAID' || inv.status === 'DISPUTED') {
-    return updateInvoice(orgId, id, { isPaused: true });
+  if (inv.status === 'PAID') {
+    throw new Error('Cannot pause reminders for an invoice that is already PAID.');
   }
 
-  return updateInvoice(orgId, id, { isPaused: true, status: 'STOPPED' });
+  // If DISPUTED, preserve DISPUTED status while setting is_paused: true
+  if (inv.status === 'DISPUTED') {
+    return updateInvoiceInternal(orgId, id, { is_paused: true });
+  }
+
+  return updateInvoiceInternal(orgId, id, { is_paused: true, status: 'STOPPED' });
 }
 
 export async function resumeInvoice(orgId: string, id: string): Promise<Invoice> {
@@ -1049,7 +1063,7 @@ export async function resumeInvoice(orgId: string, id: string): Promise<Invoice>
   }
 
   const status = inv.daysOverdue > 0 ? 'OVERDUE' : 'DUE';
-  return updateInvoice(orgId, id, { isPaused: false, status });
+  return updateInvoiceInternal(orgId, id, { is_paused: false, status });
 }
 
 export async function disputeInvoice(
@@ -1059,6 +1073,10 @@ export async function disputeInvoice(
 ): Promise<Invoice> {
   const inv = await getInvoiceById(orgId, id);
   if (!inv) throw new Error('Invoice not found.');
+
+  if (inv.status === 'PAID') {
+    throw new Error('Cannot dispute an invoice that is already marked as PAID.');
+  }
 
   if (disputed) {
     const now = new Date().toISOString();
@@ -1076,16 +1094,16 @@ export async function disputeInvoice(
       .eq('invoice_id', id)
       .in('status', ['SCHEDULED', 'GENERATING', 'PENDING_APPROVAL']);
 
-    return updateInvoice(orgId, id, {
+    return updateInvoiceInternal(orgId, id, {
       status: 'DISPUTED',
-      isPaused: true,
+      is_paused: true,
     });
   } else {
     // Explicit user resolution of dispute
     const status = inv.daysOverdue > 0 ? 'OVERDUE' : 'DUE';
-    return updateInvoice(orgId, id, {
+    return updateInvoiceInternal(orgId, id, {
       status,
-      isPaused: false,
+      is_paused: false,
     });
   }
 }
@@ -1120,27 +1138,87 @@ export async function getReminderById(orgId: string, id: string): Promise<Remind
 
 export async function createReminder(
   orgId: string,
-  reminderData: Omit<Reminder, 'id' | 'organizationId' | 'createdAt' | 'updatedAt'>
+  reminderData: {
+    invoiceId: string;
+    clientId?: string;
+    sequenceNumber: number;
+    scheduledAt?: string;
+    tone?: CommunicationStyle;
+    subject: string;
+    body: string;
+    aiGenerated?: boolean;
+    requiresReview?: boolean;
+    status?: string;
+    sentAt?: string | null;
+    gmailMessageId?: string | null;
+    approvedByUser?: boolean;
+    lastError?: string | null;
+  }
 ): Promise<Reminder> {
   const supabase = getSupabase();
+
+  // 1 & 2. Load the invoice using organization_id + invoiceId and confirm ownership
+  const invoice = await getInvoiceById(orgId, reminderData.invoiceId);
+  if (!invoice) {
+    throw new Error('Invoice not found in your organization.');
+  }
+
+  // 3 & 4. Confirm client belongs to the same organization and matches invoice
+  const targetClientId = reminderData.clientId || invoice.clientId;
+  if (!targetClientId) {
+    throw new Error('Invoice does not have an associated client.');
+  }
+  const client = await getClientById(orgId, targetClientId);
+  if (!client) {
+    throw new Error('Client not found in your organization.');
+  }
+  if (invoice.clientId && invoice.clientId !== targetClientId) {
+    throw new Error('Client does not match the invoice client.');
+  }
+
+  // 5. Confirm invoice is not PAID
+  if (invoice.status === 'PAID') {
+    throw new Error('Cannot create reminders for a PAID invoice.');
+  }
+
+  // 6. Confirm invoice is not DISPUTED
+  if (invoice.status === 'DISPUTED') {
+    throw new Error('Cannot create reminders for a DISPUTED invoice. Please resolve dispute first.');
+  }
+
+  // 7. Confirm sequenceNumber is exactly 1, 2, or 3
+  const seq = Number(reminderData.sequenceNumber);
+  if (![1, 2, 3].includes(seq)) {
+    throw new Error('Sequence number must be 1, 2, or 3.');
+  }
+
+  // 8. Reject creation if that sequence already exists for this invoice
+  const existingReminders = await getReminders(orgId);
+  const duplicate = existingReminders.find(
+    (r) => r.invoiceId === invoice.id && r.sequenceNumber === seq
+  );
+  if (duplicate) {
+    throw new Error(`A reminder for sequence #${seq} already exists for invoice #${invoice.invoiceNumber}.`);
+  }
+
   const { data, error } = await supabase
     .from('reminders')
     .insert({
       organization_id: orgId,
-      invoice_id: reminderData.invoiceId,
-      client_id: reminderData.clientId,
-      sequence_number: reminderData.sequenceNumber,
-      scheduled_at: reminderData.scheduledAt,
-      sent_at: reminderData.sentAt || null,
-      status: reminderData.status || 'SCHEDULED',
+      invoice_id: invoice.id,
+      client_id: client.id,
+      sequence_number: seq,
+      scheduled_at: reminderData.scheduledAt || new Date(Date.now() + 86400000).toISOString(),
+      sent_at: null,
+      status: 'SCHEDULED',
       tone: reminderData.tone || 'PROFESSIONAL',
       subject: reminderData.subject,
       body: reminderData.body,
-      gmail_message_id: reminderData.gmailMessageId || null,
+      gmail_message_id: null,
       ai_generated: Boolean(reminderData.aiGenerated),
-      approved_by_user: Boolean(reminderData.approvedByUser),
-      requires_review: Boolean(reminderData.requiresReview),
-      last_error: reminderData.lastError || null,
+      approved_by_user: false,
+      requires_review: reminderData.requiresReview !== false,
+      last_error: null,
     })
     .select('*')
     .single();
@@ -1151,28 +1229,39 @@ export async function createReminder(
   return mapReminder(data);
 }
 
-export async function updateReminder(
+/**
+ * Generic PATCH /reminders/:id MUST ONLY allow safe draft-edit fields.
+ * Allowed fields: subject, body, tone, scheduledAt, requiresReview.
+ * Do NOT allow directly mutating: status, sentAt, gmailMessageId, approvedByUser, especially status = SENT.
+ */
+export async function updateReminderDraft(
   orgId: string,
   id: string,
-  updates: Partial<Reminder>
+  updates: {
+    subject?: string;
+    body?: string;
+    tone?: CommunicationStyle;
+    scheduledAt?: string;
+    requiresReview?: boolean;
+    status?: string;
+  }
 ): Promise<Reminder> {
+  if (updates.status !== undefined) {
+    if (updates.status === 'SENT') {
+      throw new Error('Reminders cannot be manually marked as SENT. Status transition to SENT is reserved exclusively for confirmed email delivery providers.');
+    }
+  }
+
   const supabase = getSupabase();
   const payload: Record<string, any> = {
     updated_at: new Date().toISOString(),
   };
 
-  if (updates.sequenceNumber !== undefined) payload.sequence_number = updates.sequenceNumber;
   if (updates.scheduledAt !== undefined) payload.scheduled_at = updates.scheduledAt;
-  if (updates.sentAt !== undefined) payload.sent_at = updates.sentAt;
-  if (updates.status !== undefined) payload.status = updates.status;
   if (updates.tone !== undefined) payload.tone = updates.tone;
   if (updates.subject !== undefined) payload.subject = updates.subject;
   if (updates.body !== undefined) payload.body = updates.body;
-  if (updates.gmailMessageId !== undefined) payload.gmail_message_id = updates.gmailMessageId;
-  if (updates.aiGenerated !== undefined) payload.ai_generated = updates.aiGenerated;
-  if (updates.approvedByUser !== undefined) payload.approved_by_user = updates.approvedByUser;
-  if (updates.requiresReview !== undefined) payload.requires_review = updates.requiresReview;
-  if (updates.lastError !== undefined) payload.last_error = updates.lastError;
+  if (updates.requiresReview !== undefined) payload.requires_review = Boolean(updates.requiresReview);
 
   const { data, error } = await supabase
     .from('reminders')
@@ -1183,9 +1272,17 @@ export async function updateReminder(
     .single();
 
   if (error || !data) {
-    throw new Error(`Failed to update reminder: ${error?.message}`);
+    throw new Error('Failed to update reminder draft in database.');
   }
   return mapReminder(data);
+}
+
+export async function updateReminder(
+  orgId: string,
+  id: string,
+  updates: Partial<Reminder>
+): Promise<Reminder> {
+  return updateReminderDraft(orgId, id, updates as any);
 }
 
 /**
@@ -1326,13 +1423,28 @@ export async function createAuditLog(
 // ============================================================================
 export async function getConnections(orgId: string): Promise<Connection[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
+  const { data } = await supabase
     .from('connections')
     .select('*')
     .eq('organization_id', orgId);
 
-  if (error || !data) return [];
-  return data.map(mapConnection);
+  const existing = (data || []).map(mapConnection);
+  const providers: ('GMAIL' | 'GOOGLE_SHEETS')[] = ['GMAIL', 'GOOGLE_SHEETS'];
+  for (const p of providers) {
+    if (!existing.some((c) => c.provider === p)) {
+      existing.push({
+        id: `conn_${p.toLowerCase()}_${orgId.slice(0, 8)}`,
+        organizationId: orgId,
+        provider: p,
+        status: 'DISCONNECTED',
+        accountIdentifier: '',
+        scopes: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+    }
+  }
+  return existing;
 }
 
 export async function upsertConnection(
@@ -1347,10 +1459,10 @@ export async function upsertConnection(
       {
         organization_id: orgId,
         provider,
-        status: data.status || 'CONNECTED',
-        account_identifier: data.accountIdentifier || 'account@example.com',
+        status: data.status || 'DISCONNECTED',
+        account_identifier: data.accountIdentifier || '',
         scopes: data.scopes || [],
-        last_sync_at: new Date().toISOString(),
+        last_sync_at: data.lastSyncAt || null,
         sheet_metadata: data.sheetMetadata || null,
         updated_at: new Date().toISOString(),
       },
@@ -1360,7 +1472,7 @@ export async function upsertConnection(
     .single();
 
   if (error || !row) {
-    throw new Error(`Failed to update connection: ${error?.message}`);
+    throw new Error('Failed to update connection in database.');
   }
   return mapConnection(row);
 }
@@ -1374,6 +1486,8 @@ export async function disconnectConnection(
     .from('connections')
     .update({
       status: 'DISCONNECTED',
+      account_identifier: '',
+      scopes: [],
       updated_at: new Date().toISOString(),
     })
     .eq('organization_id', orgId)
@@ -1382,7 +1496,16 @@ export async function disconnectConnection(
     .single();
 
   if (error || !row) {
-    throw new Error(`Failed to disconnect: ${error?.message}`);
+    return {
+      id: `conn_${provider.toLowerCase()}_${orgId.slice(0, 8)}`,
+      organizationId: orgId,
+      provider,
+      status: 'DISCONNECTED',
+      accountIdentifier: '',
+      scopes: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
   }
   return mapConnection(row);
 }

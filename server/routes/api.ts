@@ -494,7 +494,7 @@ apiRouter.patch('/invoices/:id', requireAuth, requireOrgMember, async (req: Auth
     return res.json(updated);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to update invoice.';
-    console.error('Invoice update error:', msg);
+    console.error('Invoice update error:', err);
     return res.status(500).json({ error: msg });
   }
 });
@@ -517,7 +517,7 @@ apiRouter.delete('/invoices/:id', requireAuth, requireOrgMember, async (req: Aut
     return res.json({ success: true, message: 'Invoice deleted successfully.' });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to delete invoice.';
-    console.error('Invoice deletion error:', msg);
+    console.error('Invoice deletion error:', err);
     return res.status(500).json({ error: msg });
   }
 });
@@ -526,14 +526,6 @@ apiRouter.post('/invoices/:id/mark-paid', requireAuth, requireOrgMember, async (
   try {
     const paidInvoice = await markInvoicePaid(req.organizationId!, req.params.id);
 
-    await createAuditLog(req.organizationId!, {
-      userId: req.user!.id,
-      eventType: 'PAYMENT_RECORDED',
-      entityType: 'INVOICE',
-      entityId: paidInvoice.id,
-      message: `Invoice #${paidInvoice.invoiceNumber} marked as PAID. All outstanding reminders permanently stopped.`,
-    });
-
     return res.json({
       success: true,
       invoice: paidInvoice,
@@ -541,7 +533,7 @@ apiRouter.post('/invoices/:id/mark-paid', requireAuth, requireOrgMember, async (
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to mark invoice as paid.';
-    console.error('Mark paid error:', msg);
+    console.error('Mark paid error:', err);
     return res.status(500).json({ error: msg });
   }
 });
@@ -552,8 +544,8 @@ apiRouter.post('/invoices/:id/pause', requireAuth, requireOrgMember, async (req:
     return res.json(paused);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to pause reminders.';
-    console.error('Pause invoice error:', msg);
-    return res.status(500).json({ error: msg });
+    console.error('Pause invoice error:', err);
+    return res.status(400).json({ error: msg });
   }
 });
 
@@ -563,8 +555,8 @@ apiRouter.post('/invoices/:id/resume', requireAuth, requireOrgMember, async (req
     return res.json(resumed);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to resume reminders.';
-    console.error('Resume invoice error:', msg);
-    return res.status(500).json({ error: msg });
+    console.error('Resume invoice error:', err);
+    return res.status(400).json({ error: msg });
   }
 });
 
@@ -575,8 +567,8 @@ apiRouter.post('/invoices/:id/dispute', requireAuth, requireOrgMember, async (re
     return res.json(result);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to dispute invoice.';
-    console.error('Dispute invoice error:', msg);
-    return res.status(500).json({ error: msg });
+    console.error('Dispute invoice error:', err);
+    return res.status(400).json({ error: msg });
   }
 });
 
@@ -589,7 +581,7 @@ apiRouter.get('/reminders', requireAuth, requireOrgMember, async (req: Authentic
     return res.json(reminders);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch reminders.';
-    console.error('Reminders fetch error:', msg);
+    console.error('Reminders fetch error:', err);
     return res.status(500).json({ error: msg });
   }
 });
@@ -597,8 +589,8 @@ apiRouter.get('/reminders', requireAuth, requireOrgMember, async (req: Authentic
 apiRouter.post('/reminders', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const { invoiceId, clientId, sequenceNumber, scheduledAt, tone, subject, body } = req.body;
-    if (!invoiceId || !clientId || !subject || !body) {
-      return res.status(400).json({ error: 'Invoice, client, subject, and body are required.' });
+    if (!invoiceId || !subject || !body) {
+      return res.status(400).json({ error: 'Invoice ID, subject, and body are required.' });
     }
 
     const reminder = await createReminder(req.organizationId!, {
@@ -606,31 +598,35 @@ apiRouter.post('/reminders', requireAuth, requireOrgMember, async (req: Authenti
       clientId,
       sequenceNumber: (Number(sequenceNumber || 1) as 1 | 2 | 3) || 1,
       scheduledAt: scheduledAt || new Date(Date.now() + 86400000).toISOString(),
-      status: 'SCHEDULED',
       tone: tone || 'PROFESSIONAL',
       subject,
       body,
       aiGenerated: true,
-      approvedByUser: false,
       requiresReview: true,
     });
 
     return res.status(201).json(reminder);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to create reminder.';
-    console.error('Reminder creation error:', msg);
-    return res.status(500).json({ error: msg });
+    console.error('Reminder creation error:', err);
+    return res.status(400).json({ error: msg });
   }
 });
 
 apiRouter.patch('/reminders/:id', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
+    if (req.body.status === 'SENT') {
+      return res.status(400).json({
+        error: 'Reminders cannot be manually marked as SENT. Dispatch must occur through confirmed email delivery.',
+      });
+    }
+
     const updated = await updateReminder(req.organizationId!, req.params.id, req.body);
     return res.json(updated);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to update reminder draft.';
-    console.error('Reminder update error:', msg);
-    return res.status(500).json({ error: msg });
+    console.error('Reminder update error:', err);
+    return res.status(400).json({ error: msg });
   }
 });
 
@@ -651,11 +647,11 @@ const handleApproveReminder = async (req: AuthenticatedRequest, res: any) => {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to send reminder.';
     const code = (err as any)?.code;
-    console.error('Approve reminder error:', msg);
+    console.error('Approve reminder error:', err);
     if (code === 'INTEGRATION_REQUIRED') {
       return res.status(422).json({ error: msg, code });
     }
-    return res.status(500).json({ error: msg });
+    return res.status(400).json({ error: msg });
   }
 };
 
@@ -669,7 +665,7 @@ apiRouter.post('/reminders/:id/cancel', requireAuth, requireOrgMember, async (re
     return res.json(cancelled);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to cancel reminder.';
-    console.error('Cancel reminder error:', msg);
+    console.error('Cancel reminder error:', err);
     return res.status(500).json({ error: msg });
   }
 });
@@ -681,63 +677,53 @@ apiRouter.post('/gemini/generate-reminder', requireAuth, requireOrgMember, async
   try {
     const {
       invoiceId,
-      invoiceNumber,
-      clientName,
-      companyName,
-      amount,
-      currency,
-      dueDate,
-      daysOverdue,
       sequenceNumber,
-      relationshipType,
       communicationStyle,
       customInstructions,
     } = req.body;
 
-    let targetInvoiceNumber = invoiceNumber;
-    let targetClientName = clientName;
-    let targetCompanyName = companyName || 'Our Business';
-    let targetAmountFormatted = amount ? `${currency || '₹'}${Number(amount).toLocaleString('en-IN')}` : '';
-    let targetDueDate = dueDate;
-    let targetDaysOverdue = Number(daysOverdue) || 0;
-    let targetRelationship = relationshipType || 'REGULAR';
-    const targetSeq = (Number(sequenceNumber) as 1 | 2 | 3) || 1;
-
-    // If invoiceId is provided, authoritatively resolve from database
-    if (invoiceId) {
-      const invoice = await getInvoiceById(req.organizationId!, invoiceId);
-      if (!invoice) {
-        return res.status(404).json({ error: 'Invoice not found in your organization.' });
-      }
-      targetInvoiceNumber = invoice.invoiceNumber;
-      targetClientName = invoice.clientName;
-      targetAmountFormatted = `${invoice.currency} ${invoice.invoiceAmount.toLocaleString('en-IN')}`;
-      targetDueDate = invoice.dueDate;
-      targetDaysOverdue = invoice.daysOverdue;
-
-      if (invoice.clientId) {
-        const client = await getClientById(req.organizationId!, invoice.clientId);
-        if (client) {
-          targetRelationship = client.relationshipType || 'REGULAR';
-        }
-      }
-    }
-
-    if (!targetInvoiceNumber || !targetClientName) {
+    if (!invoiceId) {
       return res.status(400).json({
-        error: 'Invoice details or valid invoiceId required to generate reminder draft.',
+        error: 'invoiceId is required to generate a verified reminder draft.',
       });
     }
 
+    // Authoritatively resolve invoice from database
+    const invoice = await getInvoiceById(req.organizationId!, invoiceId);
+    if (!invoice) {
+      return res.status(404).json({ error: 'Invoice not found in your organization.' });
+    }
+
+    if (invoice.status === 'PAID') {
+      return res.status(400).json({ error: 'Cannot generate reminders for an invoice that is already PAID.' });
+    }
+
+    if (invoice.status === 'DISPUTED') {
+      return res.status(400).json({ error: 'Cannot generate reminders for a DISPUTED invoice. Please resolve dispute first.' });
+    }
+
+    const targetSeq = (Number(sequenceNumber) as 1 | 2 | 3) || 1;
+    if (![1, 2, 3].includes(targetSeq)) {
+      return res.status(400).json({ error: 'Sequence number must be 1, 2, or 3.' });
+    }
+
+    let targetRelationship = 'REGULAR';
+    if (invoice.clientId) {
+      const client = await getClientById(req.organizationId!, invoice.clientId);
+      if (client) {
+        targetRelationship = client.relationshipType || 'REGULAR';
+      }
+    }
+
     const draft = await generateReminderDraft({
-      invoiceNumber: targetInvoiceNumber,
-      clientName: targetClientName,
-      companyName: targetCompanyName,
-      amountFormatted: targetAmountFormatted || '₹0',
-      dueDateFormatted: targetDueDate || new Date().toISOString().substring(0, 10),
-      daysOverdue: targetDaysOverdue,
+      invoiceNumber: invoice.invoiceNumber,
+      clientName: invoice.clientName,
+      companyName: invoice.companyName || 'Our Business',
+      amountFormatted: `${invoice.currency} ${invoice.invoiceAmount.toLocaleString('en-IN')}`,
+      dueDateFormatted: invoice.dueDate,
+      daysOverdue: invoice.daysOverdue,
       sequenceNumber: targetSeq,
-      relationshipType: targetRelationship,
+      relationshipType: targetRelationship as any,
       tone: communicationStyle || 'PROFESSIONAL',
       customInstructions: customInstructions ? String(customInstructions).slice(0, 500) : undefined,
     });
@@ -745,7 +731,7 @@ apiRouter.post('/gemini/generate-reminder', requireAuth, requireOrgMember, async
     return res.json(draft);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'AI Generation failed.';
-    console.error('Gemini generation endpoint error:', msg);
+    console.error('Gemini generation endpoint error:', err);
     return res.status(500).json({ error: msg });
   }
 });
@@ -759,7 +745,7 @@ apiRouter.get('/email-events', requireAuth, requireOrgMember, async (req: Authen
     return res.json(events);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch email events.';
-    console.error('Email events fetch error:', msg);
+    console.error('Email events fetch error:', err);
     return res.status(500).json({ error: msg });
   }
 });
@@ -770,7 +756,7 @@ apiRouter.get('/audit-logs', requireAuth, requireOrgMember, async (req: Authenti
     return res.json(logs);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch audit logs.';
-    console.error('Audit logs fetch error:', msg);
+    console.error('Audit logs fetch error:', err);
     return res.status(500).json({ error: msg });
   }
 });
@@ -781,36 +767,37 @@ apiRouter.get('/connections', requireAuth, requireOrgMember, async (req: Authent
     return res.json(connections);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch connections.';
-    console.error('Connections fetch error:', msg);
+    console.error('Connections fetch error:', err);
     return res.status(500).json({ error: msg });
   }
 });
 
 apiRouter.post('/connections/:provider/connect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
-  try {
-    const provider = req.params.provider.toUpperCase() as 'GMAIL' | 'GOOGLE_SHEETS';
-    const { accountIdentifier, scopes } = req.body;
+  return res.status(501).json({
+    error: 'Integration not implemented. Live Google Workspace OAuth will be enabled in IC-V1.0.4.',
+    code: 'INTEGRATION_NOT_IMPLEMENTED',
+  });
+});
 
-    const connection = await upsertConnection(req.organizationId!, provider, {
-      status: 'CONNECTED',
-      accountIdentifier: accountIdentifier || `${provider.toLowerCase()}-user@gmail.com`,
-      scopes: scopes || ['https://www.googleapis.com/auth/userinfo.email'],
-    });
+apiRouter.post('/connections/connect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  return res.status(501).json({
+    error: 'Integration not implemented. Live Google Workspace OAuth will be enabled in IC-V1.0.4.',
+    code: 'INTEGRATION_NOT_IMPLEMENTED',
+  });
+});
 
-    await createAuditLog(req.organizationId!, {
-      userId: req.user!.id,
-      eventType: 'INTEGRATION_CONNECTED',
-      entityType: 'INTEGRATION',
-      entityId: connection.id,
-      message: `Connected ${provider} integration account (${connection.accountIdentifier}).`,
-    });
+apiRouter.post('/connections/sync', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  return res.status(501).json({
+    error: 'Integration synchronization not implemented.',
+    code: 'INTEGRATION_NOT_IMPLEMENTED',
+  });
+});
 
-    return res.json(connection);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Failed to connect integration.';
-    console.error('Connection error:', msg);
-    return res.status(500).json({ error: msg });
-  }
+apiRouter.post('/invoices/import-sheets', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  return res.status(501).json({
+    error: 'Google Sheets import not implemented in this version.',
+    code: 'INTEGRATION_NOT_IMPLEMENTED',
+  });
 });
 
 apiRouter.post('/connections/:provider/disconnect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
@@ -829,7 +816,7 @@ apiRouter.post('/connections/:provider/disconnect', requireAuth, requireOrgMembe
     return res.json(disconnected);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to disconnect integration.';
-    console.error('Disconnect error:', msg);
+    console.error('Disconnect error:', err);
     return res.status(500).json({ error: msg });
   }
 });
@@ -881,7 +868,7 @@ apiRouter.patch('/settings/ai', requireAuth, requireOrgMember, async (req: Authe
   }
 });
 
-apiRouter.post('/billing/upgrade', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+const handleUpgradePlan = async (req: AuthenticatedRequest, res: any) => {
   try {
     const { plan } = req.body;
     if (!plan) return res.status(400).json({ error: 'Plan is required.' });
@@ -902,7 +889,10 @@ apiRouter.post('/billing/upgrade', requireAuth, requireOrgMember, async (req: Au
     console.error('Upgrade plan error:', msg);
     return res.status(500).json({ error: msg });
   }
-});
+};
+
+apiRouter.post('/billing/upgrade', requireAuth, requireOrgMember, handleUpgradePlan);
+apiRouter.post('/billing/upgrade-plan', requireAuth, requireOrgMember, handleUpgradePlan);
 
 /* -------------------------------------------------------------
    NOTIFICATIONS API (Tenant Scoped)
@@ -918,7 +908,7 @@ apiRouter.get('/notifications', requireAuth, requireOrgMember, async (req: Authe
   }
 });
 
-apiRouter.post('/notifications/:id/read', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+const handleMarkNotificationRead = async (req: AuthenticatedRequest, res: any) => {
   try {
     await markNotificationRead(req.organizationId!, req.params.id);
     return res.json({ success: true });
@@ -927,9 +917,12 @@ apiRouter.post('/notifications/:id/read', requireAuth, requireOrgMember, async (
     console.error('Mark read error:', msg);
     return res.status(500).json({ error: msg });
   }
-});
+};
 
-apiRouter.post('/notifications/mark-all-read', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+apiRouter.post('/notifications/:id/read', requireAuth, requireOrgMember, handleMarkNotificationRead);
+apiRouter.patch('/notifications/:id/read', requireAuth, requireOrgMember, handleMarkNotificationRead);
+
+const handleMarkAllNotificationsRead = async (req: AuthenticatedRequest, res: any) => {
   try {
     await markAllNotificationsRead(req.organizationId!);
     return res.json({ success: true });
@@ -938,4 +931,7 @@ apiRouter.post('/notifications/mark-all-read', requireAuth, requireOrgMember, as
     console.error('Mark all read error:', msg);
     return res.status(500).json({ error: msg });
   }
-});
+};
+
+apiRouter.post('/notifications/mark-all-read', requireAuth, requireOrgMember, handleMarkAllNotificationsRead);
+apiRouter.post('/notifications/read-all', requireAuth, requireOrgMember, handleMarkAllNotificationsRead);
