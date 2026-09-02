@@ -38,8 +38,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
         await login(email, password);
         navigate('/app/dashboard');
       } else if (mode === 'SIGNUP') {
-        await signup(email, password, name, company);
-        navigate('/app/dashboard');
+        const loggedIn = await signup(email, password, name, company);
+        if (loggedIn) {
+          navigate('/app/dashboard');
+        } else {
+          setMessage('Account created successfully! Please check your email inbox to confirm your address before logging in.');
+        }
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Authentication failed. Please check your credentials.';

@@ -5,6 +5,7 @@ import {
   Membership,
   Client,
   Invoice,
+  InvoiceStatus,
   Reminder,
   EmailEvent,
   AuditLog,
@@ -17,6 +18,9 @@ import {
   SubscriptionPlan,
   PlanLimits,
   CommunicationStyle,
+  ReminderDraftUpdate,
+  CreateInvoiceInput,
+  UpdateInvoiceInput,
 } from '../src/types';
 
 // ============================================================================
@@ -806,61 +810,77 @@ export async function getInvoiceById(orgId: string, id: string): Promise<Invoice
 
 export async function createInvoice(
   orgId: string,
-  invoiceData: Omit<Invoice, 'id' | 'organizationId' | 'createdAt' | 'updatedAt'>
+  invoiceInput: CreateInvoiceInput
 ): Promise<Invoice> {
   const supabase = getSupabase();
 
-  // 1. Resolve or create client if clientId is missing
-  let clientId = invoiceData.clientId;
-  if (!clientId && invoiceData.clientEmail) {
+  // 1. Resolve and validate client within the same organization
+  let clientId = invoiceInput.clientId;
+  if (clientId) {
+    const client = await getClientById(orgId, clientId);
+    if (!client) {
+      throw new Error('Specified client not found in your organization.');
+    }
+  } else if (invoiceInput.clientEmail) {
     const clients = await getClients(orgId);
     const existingClient = clients.find(
-      (c) => c.email.toLowerCase() === invoiceData.clientEmail.toLowerCase()
+      (c) => c.email.toLowerCase() === invoiceInput.clientEmail.toLowerCase()
     );
     if (existingClient) {
       clientId = existingClient.id;
     } else {
       const newClient = await createClient(orgId, {
-        name: invoiceData.clientName,
-        email: invoiceData.clientEmail,
-        companyName: invoiceData.companyName || invoiceData.clientName,
+        name: invoiceInput.clientName,
+        email: invoiceInput.clientEmail,
+        companyName: invoiceInput.companyName || invoiceInput.clientName,
         relationshipType: 'REGULAR',
         paymentReliabilityScore: 85,
         averagePaymentDelayDays: 0,
-        totalInvoiced: invoiceData.invoiceAmount,
+        totalInvoiced: invoiceInput.invoiceAmount,
         totalPaid: 0,
-        totalOutstanding: invoiceData.invoiceAmount,
+        totalOutstanding: invoiceInput.invoiceAmount,
         neverContact: false,
       });
       clientId = newClient.id;
     }
   }
 
-  // 2. Insert invoice with organization uniqueness check
+  // 2. Safe initial overdue and status calculation (authoritative server-side determination)
+  const dueDateStr = invoiceInput.dueDate || new Date(Date.now() + 14 * 86400000).toISOString().substring(0, 10);
+  const invoiceDateStr = invoiceInput.invoiceDate || new Date().toISOString().substring(0, 10);
+  
+  const dueDateObj = new Date(dueDateStr);
+  const nowObj = new Date();
+  const diffTime = nowObj.getTime() - dueDateObj.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  const daysOverdue = diffDays > 0 ? diffDays : 0;
+  const initialStatus: InvoiceStatus = daysOverdue > 0 ? 'OVERDUE' : 'DUE';
+
+  // 3. Insert invoice with protected workflow initial state
   const { data, error } = await supabase
     .from('invoices')
     .insert({
       organization_id: orgId,
       client_id: clientId || null,
-      client_name: invoiceData.clientName,
-      client_email: invoiceData.clientEmail,
-      company_name: invoiceData.companyName || null,
-      invoice_number: invoiceData.invoiceNumber,
-      invoice_amount: invoiceData.invoiceAmount,
-      currency: invoiceData.currency || 'INR',
-      invoice_date: invoiceData.invoiceDate,
-      due_date: invoiceData.dueDate,
-      status: invoiceData.status || 'DUE',
-      days_overdue: invoiceData.daysOverdue ?? 0,
-      source: invoiceData.source || 'MANUAL',
-      source_reference: invoiceData.sourceReference || null,
-      last_reminder_at: invoiceData.lastReminderAt || null,
-      reminder_count: invoiceData.reminderCount ?? 0,
-      next_reminder_at: invoiceData.nextReminderAt || null,
-      payment_received_at: invoiceData.paymentReceivedAt || null,
-      is_paused: Boolean(invoiceData.isPaused),
-      extraction_confidence: invoiceData.extractionConfidence || 'HIGH',
-      notes: invoiceData.notes || null,
+      client_name: invoiceInput.clientName,
+      client_email: invoiceInput.clientEmail,
+      company_name: invoiceInput.companyName || null,
+      invoice_number: invoiceInput.invoiceNumber,
+      invoice_amount: Number(invoiceInput.invoiceAmount),
+      currency: invoiceInput.currency || 'INR',
+      invoice_date: invoiceDateStr,
+      due_date: dueDateStr,
+      status: initialStatus,
+      days_overdue: daysOverdue,
+      source: 'MANUAL',
+      source_reference: null,
+      last_reminder_at: null,
+      reminder_count: 0,
+      next_reminder_at: null,
+      payment_received_at: null,
+      is_paused: false,
+      extraction_confidence: 'HIGH',
+      notes: invoiceInput.notes || null,
     })
     .select('*')
     .single();
@@ -916,11 +936,12 @@ export async function updateInvoiceInternal(
 /**
  * Generic PATCH /invoices/:id MUST NOT allow client-controlled mutation of authoritative workflow fields.
  * Strips or rejects: status, daysOverdue, reminderCount, lastReminderAt, nextReminderAt, paymentReceivedAt, isPaused.
+ * Validates that any updated clientId belongs strictly to the current organization.
  */
 export async function updateInvoice(
   orgId: string,
   id: string,
-  updates: Partial<Invoice>
+  updates: UpdateInvoiceInput
 ): Promise<Invoice> {
   const payload: Record<string, any> = {};
 
@@ -933,7 +954,18 @@ export async function updateInvoice(
   if (updates.invoiceDate !== undefined) payload.invoice_date = updates.invoiceDate;
   if (updates.dueDate !== undefined) payload.due_date = updates.dueDate;
   if (updates.notes !== undefined) payload.notes = updates.notes;
-  if (updates.clientId !== undefined) payload.client_id = updates.clientId;
+
+  if (updates.clientId !== undefined) {
+    if (updates.clientId) {
+      const client = await getClientById(orgId, updates.clientId);
+      if (!client) {
+        throw new Error('Specified client not found in your organization.');
+      }
+      payload.client_id = updates.clientId;
+    } else {
+      payload.client_id = null;
+    }
+  }
 
   return updateInvoiceInternal(orgId, id, payload);
 }
@@ -1136,24 +1168,21 @@ export async function getReminderById(orgId: string, id: string): Promise<Remind
   return mapReminder(data);
 }
 
+export interface CreateReminderInput {
+  invoiceId: string;
+  clientId?: string;
+  sequenceNumber: 1 | 2 | 3;
+  scheduledAt?: string;
+  tone?: CommunicationStyle;
+  subject: string;
+  body: string;
+  aiGenerated?: boolean;
+  requiresReview?: boolean;
+}
+
 export async function createReminder(
   orgId: string,
-  reminderData: {
-    invoiceId: string;
-    clientId?: string;
-    sequenceNumber: number;
-    scheduledAt?: string;
-    tone?: CommunicationStyle;
-    subject: string;
-    body: string;
-    aiGenerated?: boolean;
-    requiresReview?: boolean;
-    status?: string;
-    sentAt?: string | null;
-    gmailMessageId?: string | null;
-    approvedByUser?: boolean;
-    lastError?: string | null;
-  }
+  reminderData: CreateReminderInput
 ): Promise<Reminder> {
   const supabase = getSupabase();
 
@@ -1187,18 +1216,21 @@ export async function createReminder(
   }
 
   // 7. Confirm sequenceNumber is exactly 1, 2, or 3
-  const seq = Number(reminderData.sequenceNumber);
+  const seq = Number(reminderData.sequenceNumber) as 1 | 2 | 3;
   if (![1, 2, 3].includes(seq)) {
     throw new Error('Sequence number must be 1, 2, or 3.');
   }
 
-  // 8. Reject creation if that sequence already exists for this invoice
+  // 8. Reject creation if that sequence already exists for this invoice (Application level check)
   const existingReminders = await getReminders(orgId);
   const duplicate = existingReminders.find(
     (r) => r.invoiceId === invoice.id && r.sequenceNumber === seq
   );
   if (duplicate) {
-    throw new Error(`A reminder for sequence #${seq} already exists for invoice #${invoice.invoiceNumber}.`);
+    const conflictErr = new Error(`Reminder for sequence #${seq} already exists for this invoice.`);
+    (conflictErr as any).status = 409;
+    (conflictErr as any).code = '23505';
+    throw conflictErr;
   }
 
   const { data, error } = await supabase
@@ -1224,7 +1256,17 @@ export async function createReminder(
     .single();
 
   if (error || !data) {
-    throw new Error(`Failed to create reminder: ${error?.message}`);
+    if (
+      error?.code === '23505' ||
+      error?.message?.toLowerCase().includes('duplicate') ||
+      error?.message?.toLowerCase().includes('unique')
+    ) {
+      const conflictErr = new Error(`Reminder for sequence #${seq} already exists for this invoice.`);
+      (conflictErr as any).status = 409;
+      (conflictErr as any).code = '23505';
+      throw conflictErr;
+    }
+    throw new Error('Failed to create reminder.');
   }
   return mapReminder(data);
 }
@@ -1232,26 +1274,13 @@ export async function createReminder(
 /**
  * Generic PATCH /reminders/:id MUST ONLY allow safe draft-edit fields.
  * Allowed fields: subject, body, tone, scheduledAt, requiresReview.
- * Do NOT allow directly mutating: status, sentAt, gmailMessageId, approvedByUser, especially status = SENT.
+ * Strictly prevents mutation of: status, sentAt, gmailMessageId, approvedByUser, sequence, invoiceId, organizationId.
  */
 export async function updateReminderDraft(
   orgId: string,
   id: string,
-  updates: {
-    subject?: string;
-    body?: string;
-    tone?: CommunicationStyle;
-    scheduledAt?: string;
-    requiresReview?: boolean;
-    status?: string;
-  }
+  updates: ReminderDraftUpdate
 ): Promise<Reminder> {
-  if (updates.status !== undefined) {
-    if (updates.status === 'SENT') {
-      throw new Error('Reminders cannot be manually marked as SENT. Status transition to SENT is reserved exclusively for confirmed email delivery providers.');
-    }
-  }
-
   const supabase = getSupabase();
   const payload: Record<string, any> = {
     updated_at: new Date().toISOString(),
@@ -1280,9 +1309,9 @@ export async function updateReminderDraft(
 export async function updateReminder(
   orgId: string,
   id: string,
-  updates: Partial<Reminder>
+  updates: ReminderDraftUpdate
 ): Promise<Reminder> {
-  return updateReminderDraft(orgId, id, updates as any);
+  return updateReminderDraft(orgId, id, updates);
 }
 
 /**
@@ -1329,10 +1358,23 @@ export async function cancelReminder(
   id: string,
   reason: string
 ): Promise<Reminder> {
-  return updateReminder(orgId, id, {
-    status: 'CANCELLED',
-    lastError: `Cancelled: ${reason}`,
-  });
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('reminders')
+    .update({
+      status: 'CANCELLED',
+      last_error: `Cancelled: ${reason}`,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('organization_id', orgId)
+    .eq('id', id)
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    throw new Error('Failed to cancel reminder in database.');
+  }
+  return mapReminder(data);
 }
 
 // ============================================================================

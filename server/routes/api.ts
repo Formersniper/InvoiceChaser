@@ -96,7 +96,7 @@ apiRouter.post('/auth/signup', async (req, res) => {
       companyName ? companyName.trim() : `${cleanName}'s Studio`
     );
 
-    // 4. Retrieve authoritative Supabase access token & set secure cookie
+    // 4. Retrieve authoritative Supabase access token & set secure cookie if available
     let token = authData.session?.access_token;
     if (!token) {
       const { data: signInData } = await supabase.auth.signInWithPassword({
@@ -108,14 +108,25 @@ apiRouter.post('/auth/signup', async (req, res) => {
       }
     }
 
-    if (token) {
-      res.cookie('ic_token', token, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000,
+    if (!token) {
+      // Email confirmation is required by Supabase Auth project configuration
+      return res.status(201).json({
+        requiresEmailConfirmation: true,
+        message: 'Account created. Please verify your email before logging in.',
+        user: {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+        },
       });
     }
+
+    res.cookie('ic_token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
 
     const workspace = await getWorkspaceSnapshot(user.id, organization.id);
 
@@ -443,7 +454,7 @@ apiRouter.post('/invoices', requireAuth, requireOrgMember, async (req: Authentic
       currency,
       invoiceDate,
       dueDate,
-      status,
+      clientId,
       notes,
     } = req.body;
 
@@ -454,21 +465,15 @@ apiRouter.post('/invoices', requireAuth, requireOrgMember, async (req: Authentic
     }
 
     const invoice = await createInvoice(req.organizationId!, {
-      clientId: '',
-      clientName,
-      clientEmail,
-      companyName,
-      invoiceNumber,
+      clientId: clientId || undefined,
+      clientName: clientName.trim(),
+      clientEmail: clientEmail.trim(),
+      companyName: companyName ? companyName.trim() : undefined,
+      invoiceNumber: invoiceNumber.trim(),
       invoiceAmount: Number(invoiceAmount),
       currency: currency || 'INR',
-      invoiceDate: invoiceDate || new Date().toISOString().substring(0, 10),
-      dueDate: dueDate || new Date(Date.now() + 14 * 86400000).toISOString().substring(0, 10),
-      status: status || 'DUE',
-      daysOverdue: 0,
-      source: 'MANUAL',
-      reminderCount: 0,
-      isPaused: false,
-      extractionConfidence: 'HIGH',
+      invoiceDate,
+      dueDate,
       notes,
     });
 
@@ -490,7 +495,31 @@ apiRouter.post('/invoices', requireAuth, requireOrgMember, async (req: Authentic
 
 apiRouter.patch('/invoices/:id', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    const updated = await updateInvoice(req.organizationId!, req.params.id, req.body);
+    const {
+      clientName,
+      clientEmail,
+      companyName,
+      invoiceNumber,
+      invoiceAmount,
+      currency,
+      invoiceDate,
+      dueDate,
+      notes,
+      clientId,
+    } = req.body;
+
+    const updated = await updateInvoice(req.organizationId!, req.params.id, {
+      clientName,
+      clientEmail,
+      companyName,
+      invoiceNumber,
+      invoiceAmount,
+      currency,
+      invoiceDate,
+      dueDate,
+      notes,
+      clientId,
+    });
     return res.json(updated);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to update invoice.';
@@ -581,7 +610,7 @@ apiRouter.get('/reminders', requireAuth, requireOrgMember, async (req: Authentic
     return res.json(reminders);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch reminders.';
-    console.error('Reminders fetch error:', err);
+    console.error('Reminders fetch error:', msg);
     return res.status(500).json({ error: msg });
   }
 });
@@ -608,20 +637,23 @@ apiRouter.post('/reminders', requireAuth, requireOrgMember, async (req: Authenti
     return res.status(201).json(reminder);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to create reminder.';
+    const status = (err as any)?.status || 400;
     console.error('Reminder creation error:', err);
-    return res.status(400).json({ error: msg });
+    return res.status(status).json({ error: msg });
   }
 });
 
 apiRouter.patch('/reminders/:id', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
-    if (req.body.status === 'SENT') {
-      return res.status(400).json({
-        error: 'Reminders cannot be manually marked as SENT. Dispatch must occur through confirmed email delivery.',
-      });
-    }
+    const { scheduledAt, tone, subject, body, requiresReview } = req.body;
 
-    const updated = await updateReminder(req.organizationId!, req.params.id, req.body);
+    const updated = await updateReminder(req.organizationId!, req.params.id, {
+      scheduledAt,
+      tone,
+      subject,
+      body,
+      requiresReview,
+    });
     return res.json(updated);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to update reminder draft.';

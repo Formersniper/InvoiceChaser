@@ -250,18 +250,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         name,
         companyName,
       });
+
+      if (res.requiresEmailConfirmation) {
+        setIsAuthenticated(false);
+        return false;
+      }
+
       setUser(res.user);
       setOrganization(res.organization);
       setStoredOrgId(res.organization.id);
-      setOrganizations(res.workspace.organizations || [res.organization]);
+      setOrganizations(res.workspace?.organizations || [res.organization]);
       setMembership(res.membership);
-      setAutomationSettings(res.workspace.automationSettings);
-      setAiSettings(res.workspace.aiSettings);
-      setSubscription(res.workspace.subscription);
-      setUsage({
-        ...res.workspace.usage,
-        remindersSentThisMonth: 0,
-      });
+      if (res.workspace) {
+        setAutomationSettings(res.workspace.automationSettings);
+        setAiSettings(res.workspace.aiSettings);
+        setSubscription(res.workspace.subscription);
+        setUsage({
+          ...res.workspace.usage,
+          remindersSentThisMonth: 0,
+        });
+      }
       setIsAuthenticated(true);
       // Clean empty slate for newly created organization
       setInvoices([]);

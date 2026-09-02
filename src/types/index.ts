@@ -274,3 +274,37 @@ export interface NotificationItem {
   read: boolean;
   createdAt: string;
 }
+
+export interface ReminderDraftUpdate {
+  scheduledAt?: string;
+  tone?: CommunicationStyle;
+  subject?: string;
+  body?: string;
+  requiresReview?: boolean;
+}
+
+export interface CreateInvoiceInput {
+  clientId?: string;
+  clientName: string;
+  clientEmail: string;
+  companyName?: string;
+  invoiceNumber: string;
+  invoiceAmount: number;
+  currency?: string;
+  invoiceDate?: string;
+  dueDate?: string;
+  notes?: string;
+}
+
+export interface UpdateInvoiceInput {
+  clientId?: string;
+  clientName?: string;
+  clientEmail?: string;
+  companyName?: string;
+  invoiceNumber?: string;
+  invoiceAmount?: number;
+  currency?: string;
+  invoiceDate?: string;
+  dueDate?: string;
+  notes?: string;
+}
