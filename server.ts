@@ -1,8 +1,8 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
-import { createServer as createViteServer } from 'vite';
 import { apiRouter } from './server/routes/api';
 
 dotenv.config();
@@ -13,7 +13,11 @@ const PORT = 3000;
 app.use(express.json());
 app.use(cookieParser());
 
-// Healthcheck endpoint
+// Healthcheck endpoints for Cloud Run / GCP load balancers
+app.get('/health', (_req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'ok',
@@ -25,16 +29,22 @@ app.get('/api/health', (_req, res) => {
 // Mount the multi-tenant API routes
 app.use('/api', apiRouter);
 
-// Vite Middleware Integration
+// Vite / Static Files Middleware Integration
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    const distPath = fs.existsSync(path.join(process.cwd(), 'dist', 'index.html'))
+      ? path.join(process.cwd(), 'dist')
+      : fs.existsSync(path.join(__dirname, 'index.html'))
+      ? __dirname
+      : path.join(process.cwd(), 'dist');
+
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
