@@ -44,8 +44,8 @@ export function getClientSupabase(): SupabaseClient {
   supabaseClient = createClient(url || 'https://placeholder.supabase.co', anonKey || 'placeholder', {
     auth: {
       persistSession: false, // Strictly avoids localStorage token storage
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
     },
   });
 
@@ -75,8 +75,8 @@ export async function ensureClientSupabase(): Promise<SupabaseClient> {
         supabaseClient = createClient(cachedConfig.url, cachedConfig.anonKey, {
           auth: {
             persistSession: false,
-            autoRefreshToken: true,
-            detectSessionInUrl: true,
+            autoRefreshToken: false,
+            detectSessionInUrl: false,
           },
         });
         return supabaseClient;

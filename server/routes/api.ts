@@ -153,7 +153,9 @@ apiRouter.post('/auth/signup', async (req, res) => {
     );
 
     // 4. Set authoritative httpOnly session cookie with proper Path, Secure & SameSite
-    res.cookie('ic_token', token, getAuthCookieOptions(req));
+    const signupCookieOpts = getAuthCookieOptions(req);
+    res.cookie('ic_token', token, signupCookieOpts);
+    res.cookie('sb_token', token, signupCookieOpts);
 
     const workspace = await getWorkspaceSnapshot(user.id, organization.id);
 
@@ -240,7 +242,9 @@ apiRouter.post('/auth/login', async (req, res) => {
     }
 
     // 4. Set authoritative httpOnly session cookie with proper Path, Secure & SameSite
-    res.cookie('ic_token', token, getAuthCookieOptions(req));
+    const loginCookieOpts = getAuthCookieOptions(req);
+    res.cookie('ic_token', token, loginCookieOpts);
+    res.cookie('sb_token', token, loginCookieOpts);
 
     const workspace = await getWorkspaceSnapshot(user.id, organization.id);
 
@@ -366,34 +370,31 @@ apiRouter.get('/auth/google', async (req, res) => {
 
 /**
  * Authoritative Supabase Session Synchronization Endpoint:
- * Validates Google OAuth Supabase session (or authorization code) on the backend.
+ * Validates Google OAuth authorization code on the backend via server-side exchange.
  * Ensures user profile exists in public.users (Supabase user ID = public.users.id).
  * Resolves or creates user organization.
  * Sets secure, httpOnly cookies (ic_token & sb_token) for subsequent authenticated requests.
- * Never trusts arbitrary client-supplied user IDs or email matching.
+ * Never trusts client access tokens, arbitrary client-supplied user IDs, or email matching.
  * Does NOT expose tokens back to the browser in the JSON response.
  */
 apiRouter.post('/auth/session', async (req, res) => {
   try {
-    const { accessToken, code } = req.body;
+    const { code } = req.body;
+    if (!code || typeof code !== 'string' || !code.trim()) {
+      return res.status(400).json({ error: 'Authorization code is required.' });
+    }
+
     const supabase = getSupabase();
 
-    let resolvedToken = accessToken as string | undefined;
-
-    // 1. If PKCE authorization code was returned, exchange it for session
-    if (!resolvedToken && code) {
-      const { data: exchangeData, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
-      if (exchangeError || !exchangeData?.session?.access_token) {
-        return res.status(400).json({
-          error: exchangeError?.message || 'Failed to exchange authorization code for Supabase session.',
-        });
-      }
-      resolvedToken = exchangeData.session.access_token;
+    // 1. Authoritative server-side code exchange
+    const { data: exchangeData, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code.trim());
+    if (exchangeError || !exchangeData?.session?.access_token) {
+      return res.status(400).json({
+        error: exchangeError?.message || 'Failed to exchange authorization code for Supabase session.',
+      });
     }
 
-    if (!resolvedToken) {
-      return res.status(400).json({ error: 'Supabase access token or authorization code is required.' });
-    }
+    const resolvedToken = exchangeData.session.access_token;
 
     // 2. Authoritatively verify session token against Supabase Auth
     const { data: userData, error: userError } = await supabase.auth.getUser(resolvedToken);

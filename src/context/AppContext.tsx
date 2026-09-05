@@ -19,7 +19,6 @@ import {
   ConnectionProvider,
   GmailTestResult,
   GmailMessagePreview,
-  AuthSessionResponse,
   AuthMeResponse,
   AuthLoginResponse,
   AuthSignupResponse,
@@ -34,7 +33,7 @@ import {
   INITIAL_USAGE,
 } from '../utils/storage';
 import { api, getStoredOrgId, setStoredOrgId } from '../utils/api';
-import { getClientSupabase, ensureClientSupabase } from '../lib/supabase';
+import { getClientSupabase } from '../lib/supabase';
 
 export interface AppContextType {
   // Auth state
@@ -46,7 +45,6 @@ export interface AppContextType {
   organizations: Organization[];
   login: (email: string, password?: string) => Promise<boolean>;
   loginWithGoogle: () => Promise<void>;
-  syncGoogleSession: (payload: { accessToken?: string; refreshToken?: string; code?: string }) => Promise<boolean>;
   signup: (email: string, password: string, name: string, companyName: string) => Promise<boolean>;
   logout: () => Promise<void>;
   switchOrganization: (orgId: string) => Promise<void>;
@@ -193,40 +191,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   }, []);
 
-  // Authoritative session sync from Supabase OAuth credentials
-  const syncGoogleSession = useCallback(
-    async (payload: { accessToken?: string; refreshToken?: string; code?: string }): Promise<boolean> => {
-      try {
-        setIsLoadingAuth(true);
-        const res = await api.post<AuthSessionResponse>('/api/auth/session', payload);
-        setUser(res.user);
-        setOrganization(res.organization);
-        setStoredOrgId(res.organization.id);
-        setOrganizations(res.workspace?.organizations || [res.organization]);
-        setMembership(res.workspace?.membership || null);
-        if (res.workspace) {
-          setAutomationSettings(res.workspace.automationSettings);
-          setAiSettings(res.workspace.aiSettings);
-          setSubscription(res.workspace.subscription);
-          setUsage({
-            ...res.workspace.usage,
-            remindersSentThisMonth: res.workspace.usage?.remindersSentCount || 0,
-          });
-        }
-        setIsAuthenticated(true);
-        await fetchOrgData(res.organization.id);
-        return true;
-      } catch (err) {
-        console.error('Failed to sync Google session with backend:', err);
-        setIsAuthenticated(false);
-        throw err;
-      } finally {
-        setIsLoadingAuth(false);
-      }
-    },
-    [fetchOrgData]
-  );
-
   // Initialize session on mount
   useEffect(() => {
     let isMounted = true;
@@ -280,44 +244,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     };
   }, [fetchOrgData]);
 
-  // Google-first authentication
+  // Google-first authentication: canonical server-side initiation
   const loginWithGoogle = async (): Promise<void> => {
-    let authUrl = '';
-    try {
-      const configRes = await fetch('/api/auth/google', {
-        headers: { Accept: 'application/json' },
-      });
-      if (configRes.ok) {
-        const data = await configRes.json();
-        authUrl = data.url;
-      }
-    } catch {
-      // Fall back to client Supabase initialization
+    const configRes = await fetch('/api/auth/google', {
+      headers: { Accept: 'application/json' },
+    });
+    if (!configRes.ok) {
+      const errJson = await configRes.json().catch(() => null);
+      throw new Error(errJson?.error || 'Failed to initiate Google authentication.');
     }
-
-    if (!authUrl) {
-      const supabase = await ensureClientSupabase();
-      const callbackUrl = `${window.location.origin}/auth/callback`;
-
-      // Strict identity scopes: openid, email, profile. Never gmail.readonly during sign-in.
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: callbackUrl,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'select_account',
-          },
-          scopes: 'openid email profile',
-          skipBrowserRedirect: true,
-        },
-      });
-
-      if (error || !data?.url) {
-        throw new Error(error?.message || 'Failed to initialize Google Sign-In.');
-      }
-      authUrl = data.url;
+    const data = await configRes.json();
+    if (!data?.url) {
+      throw new Error('Google authentication URL was not returned by server.');
     }
+    const authUrl = data.url;
 
     // Open popup for Google Sign-In
     const width = 540;
@@ -871,7 +811,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         organizations,
         login,
         loginWithGoogle,
-        syncGoogleSession,
         signup,
         logout,
         switchOrganization,
