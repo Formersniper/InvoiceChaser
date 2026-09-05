@@ -1,6 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
 import { getSupabase } from './supabase';
-import { findUserById, upsertUserRecord, getUserMembership, getOrganizationById, getUserOrganizations } from './db';
+import {
+  findUserById,
+  upsertUserRecord,
+  getUserMembership,
+  getOrganizationById,
+  getUserOrganizations,
+  createOrganizationForUser,
+} from './db';
 import { User, Membership, Organization } from '../src/types';
 
 export interface AuthenticatedRequest extends Request {
@@ -90,11 +97,13 @@ export async function requireOrgMember(
 
     if (!targetOrgId) {
       // If none provided in request, resolve first organization membership for user
-      const userOrgs = await getUserOrganizations(req.user.id);
-      if (userOrgs && userOrgs.length > 0) {
-        targetOrgId = userOrgs[0].id;
+      let userOrgs = await getUserOrganizations(req.user.id);
+      if (!userOrgs || userOrgs.length === 0) {
+        const orgName = `${req.user.name}'s Studio`;
+        const { organization } = await createOrganizationForUser(req.user, orgName);
+        targetOrgId = organization.id;
       } else {
-        return res.status(400).json({ error: 'Target organization ID is required.' });
+        targetOrgId = userOrgs[0].id;
       }
     }
 

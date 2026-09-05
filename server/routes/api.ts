@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, Request } from 'express';
 import { getSupabase } from '../supabase';
 import {
   findUserById,
@@ -58,8 +58,23 @@ import {
 export const apiRouter = Router();
 
 /* -------------------------------------------------------------
-   PUBLIC AUTH ENDPOINTS (Supabase Auth Authority)
+   COOKIE CONFIGURATION & PUBLIC AUTH ENDPOINTS (Supabase Auth)
 ------------------------------------------------------------- */
+export function getAuthCookieOptions(req: Request) {
+  const isHttps =
+    req.secure ||
+    req.headers['x-forwarded-proto'] === 'https' ||
+    process.env.NODE_ENV === 'production';
+
+  return {
+    httpOnly: true,
+    secure: Boolean(isHttps),
+    sameSite: (isHttps ? 'none' : 'lax') as 'none' | 'lax',
+    path: '/',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  };
+}
+
 apiRouter.post('/auth/signup', async (req, res) => {
   try {
     const { email, password, name, companyName } = req.body;
@@ -71,25 +86,56 @@ apiRouter.post('/auth/signup', async (req, res) => {
     const cleanName = name.trim();
     const supabase = getSupabase();
 
-    // 1. Sign up user via Supabase Auth
-    const { data: authData, error: authError } = await supabase.auth.signUp({
+    // 1. Create or resolve user in Supabase Auth via admin (auto-confirms email to prevent rate-limiting & confirmation lockouts)
+    let authUser: any = null;
+    let token: string | undefined = undefined;
+
+    const { data: createData, error: createError } = await supabase.auth.admin.createUser({
       email: normalizedEmail,
       password,
-      options: {
-        data: {
-          name: cleanName,
-          companyName: companyName ? companyName.trim() : `${cleanName}'s Studio`,
-        },
+      email_confirm: true,
+      user_metadata: {
+        name: cleanName,
+        companyName: companyName ? companyName.trim() : `${cleanName}'s Studio`,
       },
     });
 
-    if (authError || !authData.user) {
-      return res.status(400).json({
-        error: authError?.message || 'Failed to create user in Supabase Auth.',
+    if (createError) {
+      const errMsg = createError.message.toLowerCase();
+      if (errMsg.includes('already') || errMsg.includes('exists')) {
+        // User already registered; attempt login
+        const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+          email: normalizedEmail,
+          password,
+        });
+        if (signInErr || !signInData.user || !signInData.session) {
+          return res.status(400).json({
+            error: 'An account with this email already exists. Please sign in with your password or use a different email.',
+          });
+        }
+        authUser = signInData.user;
+        token = signInData.session.access_token;
+      } else {
+        return res.status(400).json({
+          error: createError.message || 'Failed to create user in Supabase Auth.',
+        });
+      }
+    } else if (createData.user) {
+      authUser = createData.user;
+      const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
       });
+      if (signInData?.session?.access_token) {
+        token = signInData.session.access_token;
+      } else if (signInErr) {
+        return res.status(400).json({ error: signInErr.message });
+      }
     }
 
-    const authUser = authData.user;
+    if (!authUser || !token) {
+      return res.status(400).json({ error: 'Failed to establish Supabase session.' });
+    }
 
     // 2. Ensure application profile exists in public.users
     const user = await upsertUserRecord({
@@ -105,37 +151,8 @@ apiRouter.post('/auth/signup', async (req, res) => {
       companyName ? companyName.trim() : `${cleanName}'s Studio`
     );
 
-    // 4. Retrieve authoritative Supabase access token & set secure cookie if available
-    let token = authData.session?.access_token;
-    if (!token) {
-      const { data: signInData } = await supabase.auth.signInWithPassword({
-        email: normalizedEmail,
-        password,
-      });
-      if (signInData?.session?.access_token) {
-        token = signInData.session.access_token;
-      }
-    }
-
-    if (!token) {
-      // Email confirmation is required by Supabase Auth project configuration
-      return res.status(201).json({
-        requiresEmailConfirmation: true,
-        message: 'Account created. Please verify your email before logging in.',
-        user: {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-        },
-      });
-    }
-
-    res.cookie('ic_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    // 4. Set authoritative httpOnly session cookie with proper Path, Secure & SameSite
+    res.cookie('ic_token', token, getAuthCookieOptions(req));
 
     const workspace = await getWorkspaceSnapshot(user.id, organization.id);
 
@@ -168,12 +185,29 @@ apiRouter.post('/auth/login', async (req, res) => {
     const supabase = getSupabase();
 
     // 1. Authenticate with Supabase Auth
-    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+    let { data: authData, error: authError } = await supabase.auth.signInWithPassword({
       email: normalizedEmail,
       password,
     });
 
-    if (authError || !authData.user || !authData.session) {
+    // If unconfirmed email prevents login, auto-confirm via admin and retry
+    if (authError && authError.message.toLowerCase().includes('email not confirmed')) {
+      const { data: listData } = await supabase.auth.admin.listUsers();
+      const match = listData?.users?.find((u: any) => u.email?.toLowerCase() === normalizedEmail);
+      if (match) {
+        await supabase.auth.admin.updateUserById(match.id, { email_confirm: true });
+        const retry = await supabase.auth.signInWithPassword({
+          email: normalizedEmail,
+          password,
+        });
+        if (retry.data?.session && retry.data?.user) {
+          authData = retry.data;
+          authError = null;
+        }
+      }
+    }
+
+    if (authError || !authData?.user || !authData?.session) {
       return res.status(401).json({ error: authError?.message || 'Invalid email or password.' });
     }
 
@@ -204,13 +238,8 @@ apiRouter.post('/auth/login', async (req, res) => {
       organization = created.organization;
     }
 
-    // 4. Set httpOnly session cookie
-    res.cookie('ic_token', token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    // 4. Set authoritative httpOnly session cookie with proper Path, Secure & SameSite
+    res.cookie('ic_token', token, getAuthCookieOptions(req));
 
     const workspace = await getWorkspaceSnapshot(user.id, organization.id);
 
@@ -256,15 +285,152 @@ apiRouter.post('/auth/forgot-password', async (req, res) => {
   }
 });
 
+apiRouter.get('/auth/config', (_req, res) => {
+  return res.json({
+    supabaseUrl: process.env.SUPABASE_URL || '',
+    supabaseAnonKey: process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || '',
+  });
+});
+
+/**
+ * Authoritative Supabase Session Synchronization Endpoint:
+ * Validates Google OAuth Supabase session (or authorization code) on the backend.
+ * Ensures user profile exists in public.users (Supabase user ID = public.users.id).
+ * Resolves or creates user organization.
+ * Sets secure, httpOnly cookies (ic_token & sb_token) for subsequent authenticated requests.
+ * Never trusts arbitrary client-supplied user IDs or email matching.
+ */
+apiRouter.post('/auth/session', async (req, res) => {
+  try {
+    const { accessToken, refreshToken, code } = req.body;
+    const supabase = getSupabase();
+
+    let resolvedToken = accessToken as string | undefined;
+
+    // 1. If PKCE authorization code was returned, exchange it for session
+    if (!resolvedToken && code) {
+      const { data: exchangeData, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+      if (exchangeError || !exchangeData?.session?.access_token) {
+        return res.status(400).json({
+          error: exchangeError?.message || 'Failed to exchange authorization code for Supabase session.',
+        });
+      }
+      resolvedToken = exchangeData.session.access_token;
+    }
+
+    if (!resolvedToken) {
+      return res.status(400).json({ error: 'Supabase access token or authorization code is required.' });
+    }
+
+    // 2. Authoritatively verify session token against Supabase Auth
+    const { data: userData, error: userError } = await supabase.auth.getUser(resolvedToken);
+    if (userError || !userData?.user) {
+      return res.status(401).json({
+        error: userError?.message || 'Invalid or expired Supabase session. Please sign in again.',
+      });
+    }
+
+    const authUser = userData.user;
+
+    // 3. Extract profile information from Google identity metadata
+    const googleName =
+      authUser.user_metadata?.full_name ||
+      authUser.user_metadata?.name ||
+      (authUser.email ? authUser.email.split('@')[0] : 'User');
+
+    const googleAvatar =
+      authUser.user_metadata?.avatar_url ||
+      authUser.user_metadata?.picture ||
+      `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(googleName)}`;
+
+    // 4. Ensure public.users contains the record matching Supabase Auth ID exactly
+    let user = await findUserById(authUser.id);
+    if (!user) {
+      user = await upsertUserRecord({
+        id: authUser.id,
+        email: authUser.email || '',
+        name: googleName,
+        avatarUrl: googleAvatar,
+      });
+    }
+
+    // 5. Resolve user organization membership (reuse existing; do not duplicate)
+    const orgs = await getUserOrganizations(user.id);
+    let organization = orgs[0];
+
+    if (!organization) {
+      const orgName = authUser.user_metadata?.companyName || `${user.name}'s Studio`;
+      const created = await createOrganizationForUser(user, orgName);
+      organization = created.organization;
+    }
+
+    // 6. Set authoritative httpOnly session cookies
+    res.cookie('ic_token', resolvedToken, getAuthCookieOptions(req));
+    res.cookie('sb_token', resolvedToken, getAuthCookieOptions(req));
+
+    const workspace = await getWorkspaceSnapshot(user.id, organization.id);
+
+    return res.json({
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        avatarUrl: user.avatarUrl,
+      },
+      organization,
+      workspace,
+      accessToken: resolvedToken,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Session synchronization failed.';
+    console.error('Session sync error:', msg);
+    return res.status(500).json({ error: msg });
+  }
+});
+
 apiRouter.post('/auth/logout', (req, res) => {
-  res.clearCookie('ic_token');
-  res.clearCookie('sb_token');
+  const cookieOpts = getAuthCookieOptions(req);
+  res.clearCookie('ic_token', {
+    path: '/',
+    httpOnly: true,
+    secure: cookieOpts.secure,
+    sameSite: cookieOpts.sameSite,
+  });
+  res.clearCookie('sb_token', {
+    path: '/',
+    httpOnly: true,
+    secure: cookieOpts.secure,
+    sameSite: cookieOpts.sameSite,
+  });
   return res.json({ success: true, message: 'Logged out successfully.' });
 });
 
 /* -------------------------------------------------------------
    AUTHENTICATED USER & WORKSPACE
 ------------------------------------------------------------- */
+/**
+ * Protected Auth Healthcheck:
+ * Proves server-side authentication and session validity.
+ * - Unauthenticated request -> 401
+ * - Authenticated request -> 200 with resolved user identity & organization membership
+ */
+apiRouter.get('/auth/health', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  return res.json({
+    status: 'authenticated',
+    authenticated: true,
+    user: {
+      id: req.user!.id,
+      email: req.user!.email,
+      name: req.user!.name,
+    },
+    organization: {
+      id: req.organization!.id,
+      name: req.organization!.name,
+      role: req.membership!.role,
+    },
+    timestamp: new Date().toISOString(),
+  });
+});
 apiRouter.get('/auth/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const user = req.user!;

@@ -32,6 +32,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentPath, navigate }) => {
     markNotificationRead,
     markAllNotificationsRead,
     isBackendConnected,
+    logout,
   } = useApp();
 
   const [showNotifications, setShowNotifications] = useState(false);
@@ -284,7 +285,8 @@ export const Navbar: React.FC<NavbarProps> = ({ currentPath, navigate }) => {
 
               <div className="border-t border-[#efeae1] pt-1">
                 <button
-                  onClick={() => {
+                  onClick={async () => {
+                    await logout();
                     navigate('/login');
                     setShowUserDropdown(false);
                   }}

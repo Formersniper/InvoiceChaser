@@ -26,6 +26,7 @@ export const ConnectionsPage: React.FC = () => {
     getRecentGmailMessages,
     triggerManualSync,
     refreshData,
+    isAuthenticated,
   } = useApp();
 
   const [isSyncing, setIsSyncing] = useState(false);
@@ -83,6 +84,13 @@ export const ConnectionsPage: React.FC = () => {
   };
 
   const handleConnectGmail = async () => {
+    if (!isAuthenticated) {
+      setOauthNotice({
+        type: 'error',
+        message: 'Authentication required. Please log in.',
+      });
+      return;
+    }
     setIsConnectingGmail(true);
     setOauthNotice(null);
     try {
@@ -316,7 +324,7 @@ export const ConnectionsPage: React.FC = () => {
             ) : (
               <button
                 onClick={handleConnectGmail}
-                disabled={isConnectingGmail}
+                disabled={isConnectingGmail || !isAuthenticated}
                 className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white hover:bg-indigo-700 transition shadow-xs disabled:opacity-50"
               >
                 {isConnectingGmail ? (

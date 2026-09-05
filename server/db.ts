@@ -1,4 +1,5 @@
 import { getSupabase } from './supabase';
+import { localStore, isSchemaCacheMissing } from './storageFallback';
 import {
   User,
   Organization,
@@ -302,27 +303,47 @@ function mapNotification(row: any): NotificationItem {
 // ============================================================================
 export async function findUserById(id: string): Promise<User | null> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('users')
-    .select('*')
-    .eq('id', id)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', id)
+      .single();
 
-  if (error || !data) return null;
-  return mapUser(data);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getUser(id);
+      }
+      return null;
+    }
+    return data ? mapUser(data) : null;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getUser(id);
+    return null;
+  }
 }
 
 export async function findUserByEmail(email: string): Promise<User | null> {
   const supabase = getSupabase();
   const normalized = email.trim().toLowerCase();
-  const { data, error } = await supabase
-    .from('users')
-    .select('*')
-    .eq('email', normalized)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', normalized)
+      .single();
 
-  if (error || !data) return null;
-  return mapUser(data);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getUserByEmail(normalized);
+      }
+      return null;
+    }
+    return data ? mapUser(data) : null;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getUserByEmail(normalized);
+    return null;
+  }
 }
 
 export async function upsertUserRecord(params: {
@@ -332,27 +353,50 @@ export async function upsertUserRecord(params: {
   avatarUrl?: string;
 }): Promise<User> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('users')
-    .upsert(
-      {
+  const avatarUrl =
+    params.avatarUrl ||
+    `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(params.name.trim())}`;
+  const now = new Date().toISOString();
+
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .upsert(
+        {
+          id: params.id,
+          email: params.email.trim().toLowerCase(),
+          name: params.name.trim(),
+          avatar_url: avatarUrl,
+          updated_at: now,
+        },
+        { onConflict: 'id' }
+      )
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.upsertUser({
+          id: params.id,
+          email: params.email.trim().toLowerCase(),
+          name: params.name.trim(),
+          avatarUrl,
+        });
+      }
+      throw new Error(`Failed to save user profile: ${error.message}`);
+    }
+    return mapUser(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      return localStore.upsertUser({
         id: params.id,
         email: params.email.trim().toLowerCase(),
         name: params.name.trim(),
-        avatar_url:
-          params.avatarUrl ||
-          `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(params.name.trim())}`,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'id' }
-    )
-    .select('*')
-    .single();
-
-  if (error) {
-    throw new Error(`Failed to save user profile: ${error.message}`);
+        avatarUrl,
+      });
+    }
+    throw err;
   }
-  return mapUser(data);
 }
 
 export async function updateUserProfile(
@@ -367,163 +411,260 @@ export async function updateUserProfile(
   if (updates.name !== undefined) updatePayload.name = updates.name.trim();
   if (updates.avatarUrl !== undefined) updatePayload.avatar_url = updates.avatarUrl;
 
-  const { data, error } = await supabase
-    .from('users')
-    .update(updatePayload)
-    .eq('id', userId)
-    .select('*')
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .update(updatePayload)
+      .eq('id', userId)
+      .select('*')
+      .single();
 
-  if (error) {
-    throw new Error(`Failed to update profile: ${error.message}`);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const u = localStore.getUser(userId);
+        if (u) {
+          if (updates.name !== undefined) u.name = updates.name.trim();
+          if (updates.avatarUrl !== undefined) u.avatarUrl = updates.avatarUrl;
+          return localStore.upsertUser(u);
+        }
+      }
+      throw new Error(`Failed to update profile: ${error.message}`);
+    }
+    return mapUser(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const u = localStore.getUser(userId);
+      if (u) {
+        if (updates.name !== undefined) u.name = updates.name.trim();
+        if (updates.avatarUrl !== undefined) u.avatarUrl = updates.avatarUrl;
+        return localStore.upsertUser(u);
+      }
+    }
+    throw err;
   }
-  return mapUser(data);
 }
 
 // ============================================================================
 // ORGANIZATIONS & MEMBERSHIPS (Multi-Tenancy)
 // ============================================================================
+function createOrgFallback(user: User, name: string, slug: string, now: string) {
+  const orgId = 'org_' + Math.random().toString(36).substring(2, 12);
+  const memId = 'mem_' + Math.random().toString(36).substring(2, 12);
+  const organization: Organization = {
+    id: orgId,
+    name: name.trim(),
+    slug,
+    ownerUserId: user.id,
+    timezone: 'Asia/Kolkata',
+    currency: 'INR',
+    createdAt: now,
+    updatedAt: now,
+  };
+  const membership: Membership = {
+    id: memId,
+    organizationId: orgId,
+    userId: user.id,
+    role: 'owner',
+    createdAt: now,
+  };
+  localStore.upsertOrganization(organization);
+  localStore.upsertMembership(membership);
+  localStore.upsertAutomationSettings({
+    id: 'as_' + orgId,
+    organizationId: orgId,
+    automaticReminders: true,
+    automaticallyStopWhenPaid: true,
+    avoidWeekends: true,
+    preferredSendingTime: '10:00',
+    timezone: 'Asia/Kolkata',
+    policyTier: 'STANDARD',
+    policyIntervals: { firstReminderDays: 3, secondReminderDays: 10, finalReminderDays: 17 },
+    maxReminders: 3,
+  });
+  localStore.upsertAISettings({
+    id: 'ai_' + orgId,
+    organizationId: orgId,
+    communicationStyle: 'PROFESSIONAL',
+    relationshipAwarePersonalization: true,
+    reviewBeforeSending: true,
+  });
+  localStore.upsertSubscription({
+    id: 'sub_' + orgId,
+    organizationId: orgId,
+    plan: 'FREE',
+    status: 'ACTIVE',
+    currentPeriodStart: now,
+    currentPeriodEnd: new Date(Date.now() + 30 * 86400000).toISOString(),
+    cancelAtPeriodEnd: false,
+    limits: getPlanLimits('FREE'),
+  });
+  localStore.upsertUsage({
+    organizationId: orgId,
+    month: now.substring(0, 7),
+    activeInvoicesCount: 0,
+    remindersSentCount: 0,
+    aiGenerationsCount: 0,
+    connectedGmailAccounts: 0,
+  });
+  return { organization, membership };
+}
+
 export async function createOrganizationForUser(
   user: User,
   name: string
 ): Promise<{ organization: Organization; membership: Membership }> {
   const supabase = getSupabase();
   const slug = `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${Math.random().toString(36).substring(2, 6)}`;
+  const now = new Date().toISOString();
 
-  // 1. Insert organization
-  const { data: orgData, error: orgError } = await supabase
-    .from('organizations')
-    .insert({
-      name: name.trim(),
-      slug,
-      owner_user_id: user.id,
-      timezone: 'Asia/Kolkata',
-      currency: 'INR',
-    })
-    .select('*')
-    .single();
+  try {
+    // 1. Insert organization
+    const { data: orgData, error: orgError } = await supabase
+      .from('organizations')
+      .insert({
+        name: name.trim(),
+        slug,
+        owner_user_id: user.id,
+        timezone: 'Asia/Kolkata',
+        currency: 'INR',
+      })
+      .select('*')
+      .single();
 
-  if (orgError || !orgData) {
-    throw new Error(`Failed to create organization: ${orgError?.message}`);
+    if (orgError) {
+      if (isSchemaCacheMissing(orgError)) {
+        return createOrgFallback(user, name, slug, now);
+      }
+      throw new Error(`Failed to create organization: ${orgError?.message}`);
+    }
+
+    const organization = mapOrganization(orgData);
+
+    // 2. Insert owner membership
+    const { data: memData, error: memError } = await supabase
+      .from('memberships')
+      .insert({
+        organization_id: organization.id,
+        user_id: user.id,
+        role: 'owner',
+      })
+      .select('*')
+      .single();
+
+    if (memError) {
+      if (isSchemaCacheMissing(memError)) {
+        return createOrgFallback(user, name, slug, now);
+      }
+      throw new Error(`Failed to create organization membership: ${memError?.message}`);
+    }
+
+    const membership = mapMembership(memData);
+
+    // 3. Initialize default settings safely
+    try {
+      await supabase.from('automation_settings').upsert({
+        organization_id: organization.id,
+        automatic_reminders: true,
+        automatically_stop_when_paid: true,
+        avoid_weekends: true,
+        preferred_sending_time: '10:00',
+        timezone: 'Asia/Kolkata',
+        policy_tier: 'STANDARD',
+        policy_intervals: { firstReminderDays: 3, secondReminderDays: 10, finalReminderDays: 17 },
+        max_reminders: 3,
+      });
+      await supabase.from('ai_settings').upsert({
+        organization_id: organization.id,
+        communication_style: 'PROFESSIONAL',
+        relationship_aware_personalization: true,
+        review_before_sending: true,
+      });
+      await supabase.from('subscriptions').upsert({
+        organization_id: organization.id,
+        plan: 'FREE',
+        status: 'ACTIVE',
+        limits: getPlanLimits('FREE'),
+      });
+      await supabase.from('usage').upsert({
+        organization_id: organization.id,
+        month: now.substring(0, 7),
+        active_invoices_count: 0,
+        reminders_sent_count: 0,
+        ai_generations_count: 0,
+        connected_gmail_accounts: 0,
+      });
+    } catch {
+      // auxiliary schema cache missing safe to continue
+    }
+
+    return { organization, membership };
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      return createOrgFallback(user, name, slug, now);
+    }
+    throw err;
   }
-
-  const organization = mapOrganization(orgData);
-
-  // 2. Insert owner membership
-  const { data: memData, error: memError } = await supabase
-    .from('memberships')
-    .insert({
-      organization_id: organization.id,
-      user_id: user.id,
-      role: 'owner',
-    })
-    .select('*')
-    .single();
-
-  if (memError || !memData) {
-    throw new Error(`Failed to create organization membership: ${memError?.message}`);
-  }
-
-  const membership = mapMembership(memData);
-
-  // 3. Initialize default automation settings
-  await supabase.from('automation_settings').upsert({
-    organization_id: organization.id,
-    automatic_reminders: true,
-    automatically_stop_when_paid: true,
-    avoid_weekends: true,
-    preferred_sending_time: '10:00',
-    timezone: 'Asia/Kolkata',
-    policy_tier: 'STANDARD',
-    policy_intervals: {
-      firstReminderDays: 3,
-      secondReminderDays: 10,
-      finalReminderDays: 17,
-    },
-    max_reminders: 3,
-  });
-
-  // 4. Initialize default AI settings
-  await supabase.from('ai_settings').upsert({
-    organization_id: organization.id,
-    communication_style: 'PROFESSIONAL',
-    relationship_aware_personalization: true,
-    review_before_sending: true,
-  });
-
-  // 5. Initialize FREE Subscription & Usage
-  const currentMonth = new Date().toISOString().substring(0, 7);
-  await supabase.from('subscriptions').upsert({
-    organization_id: organization.id,
-    plan: 'FREE',
-    status: 'ACTIVE',
-    limits: getPlanLimits('FREE'),
-  });
-
-  await supabase.from('usage').upsert(
-    {
-      organization_id: organization.id,
-      month: currentMonth,
-      active_invoices_count: 0,
-      reminders_sent_count: 0,
-      ai_generations_count: 0,
-      connected_gmail_accounts: 0,
-    },
-    { onConflict: 'organization_id,month' }
-  );
-
-  // 6. Create Welcome Notification & Audit Log
-  await supabase.from('notifications').insert({
-    organization_id: organization.id,
-    type: 'SUCCESS',
-    title: 'Welcome to InvoiceChaser AI',
-    message: `Your account for "${organization.name}" is ready. Connect your billing sources or add your first invoice to get started.`,
-  });
-
-  await supabase.from('audit_logs').insert({
-    organization_id: organization.id,
-    user_id: user.id,
-    event_type: 'ORGANIZATION_CREATED',
-    entity_type: 'ORGANIZATION',
-    entity_id: organization.id,
-    message: `Created organization "${organization.name}".`,
-  });
-
-  return { organization, membership };
 }
 
 export async function getOrganizationById(orgId: string): Promise<Organization | null> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('organizations')
-    .select('*')
-    .eq('id', orgId)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('organizations')
+      .select('*')
+      .eq('id', orgId)
+      .single();
 
-  if (error || !data) return null;
-  return mapOrganization(data);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getOrganization(orgId);
+      }
+      return null;
+    }
+    return data ? mapOrganization(data) : null;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getOrganization(orgId);
+    return null;
+  }
 }
 
 export async function getUserOrganizations(userId: string): Promise<Organization[]> {
   const supabase = getSupabase();
-  const { data: memberships, error: memError } = await supabase
-    .from('memberships')
-    .select('organization_id')
-    .eq('user_id', userId);
+  try {
+    const { data: memberships, error: memError } = await supabase
+      .from('memberships')
+      .select('organization_id')
+      .eq('user_id', userId);
 
-  if (memError || !memberships || memberships.length === 0) {
+    if (memError) {
+      if (isSchemaCacheMissing(memError)) {
+        return localStore.getUserOrganizations(userId);
+      }
+      return [];
+    }
+
+    if (!memberships || memberships.length === 0) {
+      return [];
+    }
+
+    const orgIds = memberships.map((m) => m.organization_id);
+    const { data: orgs, error: orgError } = await supabase
+      .from('organizations')
+      .select('*')
+      .in('id', orgIds)
+      .order('created_at', { ascending: true });
+
+    if (orgError) {
+      if (isSchemaCacheMissing(orgError)) {
+        return localStore.getUserOrganizations(userId);
+      }
+      return [];
+    }
+    return (orgs || []).map(mapOrganization);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getUserOrganizations(userId);
     return [];
   }
-
-  const orgIds = memberships.map((m) => m.organization_id);
-  const { data: orgs, error: orgError } = await supabase
-    .from('organizations')
-    .select('*')
-    .in('id', orgIds)
-    .order('created_at', { ascending: true });
-
-  if (orgError || !orgs) return [];
-  return orgs.map(mapOrganization);
 }
 
 export async function getUserMembership(
@@ -531,15 +672,25 @@ export async function getUserMembership(
   orgId: string
 ): Promise<Membership | null> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('memberships')
-    .select('*')
-    .eq('user_id', userId)
-    .eq('organization_id', orgId)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('memberships')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('organization_id', orgId)
+      .single();
 
-  if (error || !data) return null;
-  return mapMembership(data);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getMembership(userId, orgId);
+      }
+      return null;
+    }
+    return data ? mapMembership(data) : null;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getMembership(userId, orgId);
+    return null;
+  }
 }
 
 export async function updateOrganization(
@@ -554,17 +705,39 @@ export async function updateOrganization(
   if (updates.timezone !== undefined) payload.timezone = updates.timezone;
   if (updates.currency !== undefined) payload.currency = updates.currency;
 
-  const { data, error } = await supabase
-    .from('organizations')
-    .update(payload)
-    .eq('id', orgId)
-    .select('*')
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('organizations')
+      .update(payload)
+      .eq('id', orgId)
+      .select('*')
+      .single();
 
-  if (error || !data) {
-    throw new Error(`Failed to update organization: ${error?.message}`);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const o = localStore.getOrganization(orgId);
+        if (o) {
+          if (updates.name !== undefined) o.name = updates.name.trim();
+          if (updates.timezone !== undefined) o.timezone = updates.timezone;
+          if (updates.currency !== undefined) o.currency = updates.currency;
+          return localStore.upsertOrganization(o);
+        }
+      }
+      throw new Error(`Failed to update organization: ${error?.message}`);
+    }
+    return mapOrganization(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const o = localStore.getOrganization(orgId);
+      if (o) {
+        if (updates.name !== undefined) o.name = updates.name.trim();
+        if (updates.timezone !== undefined) o.timezone = updates.timezone;
+        if (updates.currency !== undefined) o.currency = updates.currency;
+        return localStore.upsertOrganization(o);
+      }
+    }
+    throw err;
   }
-  return mapOrganization(data);
 }
 
 // ============================================================================
@@ -641,27 +814,47 @@ export async function getWorkspaceSnapshot(userId: string, orgId?: string) {
 // ============================================================================
 export async function getClients(orgId: string): Promise<Client[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('clients')
-    .select('*')
-    .eq('organization_id', orgId)
-    .order('created_at', { ascending: false });
+  try {
+    const { data, error } = await supabase
+      .from('clients')
+      .select('*')
+      .eq('organization_id', orgId)
+      .order('created_at', { ascending: false });
 
-  if (error || !data) return [];
-  return data.map(mapClient);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getClients(orgId);
+      }
+      return [];
+    }
+    return (data || []).map(mapClient);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getClients(orgId);
+    return [];
+  }
 }
 
 export async function getClientById(orgId: string, id: string): Promise<Client | null> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('clients')
-    .select('*')
-    .eq('organization_id', orgId)
-    .eq('id', id)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('clients')
+      .select('*')
+      .eq('organization_id', orgId)
+      .eq('id', id)
+      .single();
 
-  if (error || !data) return null;
-  return mapClient(data);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getClient(orgId, id);
+      }
+      return null;
+    }
+    return data ? mapClient(data) : null;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getClient(orgId, id);
+    return null;
+  }
 }
 
 export async function createClient(
@@ -669,29 +862,76 @@ export async function createClient(
   clientData: Omit<Client, 'id' | 'organizationId' | 'createdAt' | 'updatedAt'>
 ): Promise<Client> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('clients')
-    .insert({
-      organization_id: orgId,
-      name: clientData.name.trim(),
-      email: clientData.email.trim().toLowerCase(),
-      company_name: clientData.companyName.trim(),
-      relationship_type: clientData.relationshipType || 'REGULAR',
-      payment_reliability_score: clientData.paymentReliabilityScore ?? 85,
-      average_payment_delay_days: clientData.averagePaymentDelayDays ?? 0,
-      total_invoiced: clientData.totalInvoiced ?? 0,
-      total_paid: clientData.totalPaid ?? 0,
-      total_outstanding: clientData.totalOutstanding ?? 0,
-      never_contact: Boolean(clientData.neverContact),
-      notes: clientData.notes || null,
-    })
-    .select('*')
-    .single();
+  const now = new Date().toISOString();
+  const insertPayload = {
+    organization_id: orgId,
+    name: clientData.name.trim(),
+    email: clientData.email.trim().toLowerCase(),
+    company_name: clientData.companyName.trim(),
+    relationship_type: clientData.relationshipType || 'REGULAR',
+    payment_reliability_score: clientData.paymentReliabilityScore ?? 85,
+    average_payment_delay_days: clientData.averagePaymentDelayDays ?? 0,
+    total_invoiced: clientData.totalInvoiced ?? 0,
+    total_paid: clientData.totalPaid ?? 0,
+    total_outstanding: clientData.totalOutstanding ?? 0,
+    never_contact: Boolean(clientData.neverContact),
+    notes: clientData.notes || null,
+  };
 
-  if (error || !data) {
-    throw new Error(`Failed to create client: ${error?.message}`);
+  try {
+    const { data, error } = await supabase
+      .from('clients')
+      .insert(insertPayload)
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const fallbackClient: Client = {
+          id: 'cli_' + Math.random().toString(36).substring(2, 12),
+          organizationId: orgId,
+          name: clientData.name.trim(),
+          email: clientData.email.trim().toLowerCase(),
+          companyName: clientData.companyName.trim(),
+          relationshipType: clientData.relationshipType || 'REGULAR',
+          paymentReliabilityScore: clientData.paymentReliabilityScore ?? 85,
+          averagePaymentDelayDays: clientData.averagePaymentDelayDays ?? 0,
+          totalInvoiced: clientData.totalInvoiced ?? 0,
+          totalPaid: clientData.totalPaid ?? 0,
+          totalOutstanding: clientData.totalOutstanding ?? 0,
+          neverContact: Boolean(clientData.neverContact),
+          notes: clientData.notes || null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        return localStore.upsertClient(fallbackClient);
+      }
+      throw new Error(`Failed to create client: ${error?.message}`);
+    }
+    return mapClient(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const fallbackClient: Client = {
+        id: 'cli_' + Math.random().toString(36).substring(2, 12),
+        organizationId: orgId,
+        name: clientData.name.trim(),
+        email: clientData.email.trim().toLowerCase(),
+        companyName: clientData.companyName.trim(),
+        relationshipType: clientData.relationshipType || 'REGULAR',
+        paymentReliabilityScore: clientData.paymentReliabilityScore ?? 85,
+        averagePaymentDelayDays: clientData.averagePaymentDelayDays ?? 0,
+        totalInvoiced: clientData.totalInvoiced ?? 0,
+        totalPaid: clientData.totalPaid ?? 0,
+        totalOutstanding: clientData.totalOutstanding ?? 0,
+        neverContact: Boolean(clientData.neverContact),
+        notes: clientData.notes || null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return localStore.upsertClient(fallbackClient);
+    }
+    throw err;
   }
-  return mapClient(data);
 }
 
 export async function updateClient(
@@ -700,8 +940,9 @@ export async function updateClient(
   updates: Partial<Client>
 ): Promise<Client> {
   const supabase = getSupabase();
+  const now = new Date().toISOString();
   const payload: Record<string, any> = {
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   };
 
   if (updates.name !== undefined) payload.name = updates.name.trim();
@@ -716,30 +957,58 @@ export async function updateClient(
   if (updates.neverContact !== undefined) payload.never_contact = updates.neverContact;
   if (updates.notes !== undefined) payload.notes = updates.notes;
 
-  const { data, error } = await supabase
-    .from('clients')
-    .update(payload)
-    .eq('organization_id', orgId)
-    .eq('id', id)
-    .select('*')
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('clients')
+      .update(payload)
+      .eq('organization_id', orgId)
+      .eq('id', id)
+      .select('*')
+      .single();
 
-  if (error || !data) {
-    throw new Error(`Failed to update client: ${error?.message}`);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const c = localStore.getClient(orgId, id);
+        if (!c) throw new Error('Client not found.');
+        const updated = { ...c, ...updates, updatedAt: now };
+        return localStore.upsertClient(updated);
+      }
+      throw new Error(`Failed to update client: ${error?.message}`);
+    }
+    return mapClient(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const c = localStore.getClient(orgId, id);
+      if (!c) throw new Error('Client not found.');
+      const updated = { ...c, ...updates, updatedAt: now };
+      return localStore.upsertClient(updated);
+    }
+    throw err;
   }
-  return mapClient(data);
 }
 
 export async function deleteClient(orgId: string, id: string): Promise<void> {
   const supabase = getSupabase();
-  const { error } = await supabase
-    .from('clients')
-    .delete()
-    .eq('organization_id', orgId)
-    .eq('id', id);
+  try {
+    const { error } = await supabase
+      .from('clients')
+      .delete()
+      .eq('organization_id', orgId)
+      .eq('id', id);
 
-  if (error) {
-    throw new Error(`Failed to delete client: ${error.message}`);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        localStore.deleteClient(id);
+        return;
+      }
+      throw new Error(`Failed to delete client: ${error.message}`);
+    }
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      localStore.deleteClient(id);
+      return;
+    }
+    throw err;
   }
 }
 
@@ -748,38 +1017,82 @@ export async function deleteClient(orgId: string, id: string): Promise<void> {
 // ============================================================================
 export async function recalculateClientTotals(orgId: string, clientId: string): Promise<void> {
   const supabase = getSupabase();
-  const { data: invs, error } = await supabase
-    .from('invoices')
-    .select('invoice_amount, status')
-    .eq('organization_id', orgId)
-    .eq('client_id', clientId);
+  try {
+    const { data: invs, error } = await supabase
+      .from('invoices')
+      .select('invoice_amount, status')
+      .eq('organization_id', orgId)
+      .eq('client_id', clientId);
 
-  if (error || !invs) return;
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const allInvs = localStore.getInvoices(orgId).filter((i) => i.clientId === clientId);
+        let totalInvoiced = 0;
+        let totalPaid = 0;
+        let totalOutstanding = 0;
+        for (const inv of allInvs) {
+          const amount = Number(inv.invoiceAmount) || 0;
+          totalInvoiced += amount;
+          if (inv.status === 'PAID') totalPaid += amount;
+          else totalOutstanding += amount;
+        }
+        const c = localStore.getClient(orgId, clientId);
+        if (c) {
+          c.totalInvoiced = totalInvoiced;
+          c.totalPaid = totalPaid;
+          c.totalOutstanding = totalOutstanding;
+          localStore.upsertClient(c);
+        }
+        return;
+      }
+      return;
+    }
 
-  let totalInvoiced = 0;
-  let totalPaid = 0;
-  let totalOutstanding = 0;
+    let totalInvoiced = 0;
+    let totalPaid = 0;
+    let totalOutstanding = 0;
 
-  for (const inv of invs) {
-    const amount = Number(inv.invoice_amount) || 0;
-    totalInvoiced += amount;
-    if (inv.status === 'PAID') {
-      totalPaid += amount;
-    } else {
-      totalOutstanding += amount;
+    for (const inv of invs || []) {
+      const amount = Number(inv.invoice_amount) || 0;
+      totalInvoiced += amount;
+      if (inv.status === 'PAID') {
+        totalPaid += amount;
+      } else {
+        totalOutstanding += amount;
+      }
+    }
+
+    await supabase
+      .from('clients')
+      .update({
+        total_invoiced: totalInvoiced,
+        total_paid: totalPaid,
+        total_outstanding: totalOutstanding,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('organization_id', orgId)
+      .eq('id', clientId);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const allInvs = localStore.getInvoices(orgId).filter((i) => i.clientId === clientId);
+      let totalInvoiced = 0;
+      let totalPaid = 0;
+      let totalOutstanding = 0;
+      for (const inv of allInvs) {
+        const amount = Number(inv.invoiceAmount) || 0;
+        totalInvoiced += amount;
+        if (inv.status === 'PAID') totalPaid += amount;
+        else totalOutstanding += amount;
+      }
+      const c = localStore.getClient(orgId, clientId);
+      if (c) {
+        c.totalInvoiced = totalInvoiced;
+        c.totalPaid = totalPaid;
+        c.totalOutstanding = totalOutstanding;
+        localStore.upsertClient(c);
+      }
     }
   }
-
-  await supabase
-    .from('clients')
-    .update({
-      total_invoiced: totalInvoiced,
-      total_paid: totalPaid,
-      total_outstanding: totalOutstanding,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('organization_id', orgId)
-    .eq('id', clientId);
 }
 
 // ============================================================================
@@ -787,27 +1100,47 @@ export async function recalculateClientTotals(orgId: string, clientId: string): 
 // ============================================================================
 export async function getInvoices(orgId: string): Promise<Invoice[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('invoices')
-    .select('*')
-    .eq('organization_id', orgId)
-    .order('created_at', { ascending: false });
+  try {
+    const { data, error } = await supabase
+      .from('invoices')
+      .select('*')
+      .eq('organization_id', orgId)
+      .order('created_at', { ascending: false });
 
-  if (error || !data) return [];
-  return data.map(mapInvoice);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getInvoices(orgId);
+      }
+      return [];
+    }
+    return (data || []).map(mapInvoice);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getInvoices(orgId);
+    return [];
+  }
 }
 
 export async function getInvoiceById(orgId: string, id: string): Promise<Invoice | null> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('invoices')
-    .select('*')
-    .eq('organization_id', orgId)
-    .eq('id', id)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('invoices')
+      .select('*')
+      .eq('organization_id', orgId)
+      .eq('id', id)
+      .single();
 
-  if (error || !data) return null;
-  return mapInvoice(data);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getInvoice(orgId, id);
+      }
+      return null;
+    }
+    return data ? mapInvoice(data) : null;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getInvoice(orgId, id);
+    return null;
+  }
 }
 
 export async function createInvoice(
@@ -858,47 +1191,117 @@ export async function createInvoice(
   const daysOverdue = diffDays > 0 ? diffDays : 0;
   const initialStatus: InvoiceStatus = daysOverdue > 0 ? 'OVERDUE' : 'DUE';
 
-  // 3. Insert invoice with protected workflow initial state
-  const { data, error } = await supabase
-    .from('invoices')
-    .insert({
-      organization_id: orgId,
-      client_id: clientId || null,
-      client_name: invoiceInput.clientName,
-      client_email: invoiceInput.clientEmail,
-      company_name: invoiceInput.companyName || null,
-      invoice_number: invoiceInput.invoiceNumber,
-      invoice_amount: Number(invoiceInput.invoiceAmount),
-      currency: invoiceInput.currency || 'INR',
-      invoice_date: invoiceDateStr,
-      due_date: dueDateStr,
-      status: initialStatus,
-      days_overdue: daysOverdue,
-      source: 'MANUAL',
-      source_reference: null,
-      last_reminder_at: null,
-      reminder_count: 0,
-      next_reminder_at: null,
-      payment_received_at: null,
-      is_paused: false,
-      extraction_confidence: 'HIGH',
-      notes: invoiceInput.notes || null,
-    })
-    .select('*')
-    .single();
+  const insertPayload = {
+    organization_id: orgId,
+    client_id: clientId || null,
+    client_name: invoiceInput.clientName,
+    client_email: invoiceInput.clientEmail,
+    company_name: invoiceInput.companyName || null,
+    invoice_number: invoiceInput.invoiceNumber,
+    invoice_amount: Number(invoiceInput.invoiceAmount),
+    currency: invoiceInput.currency || 'INR',
+    invoice_date: invoiceDateStr,
+    due_date: dueDateStr,
+    status: initialStatus,
+    days_overdue: daysOverdue,
+    source: 'MANUAL',
+    source_reference: null,
+    last_reminder_at: null,
+    reminder_count: 0,
+    next_reminder_at: null,
+    payment_received_at: null,
+    is_paused: false,
+    extraction_confidence: 'HIGH',
+    notes: invoiceInput.notes || null,
+  };
 
-  if (error || !data) {
-    throw new Error(`Failed to create invoice: ${error?.message}`);
+  try {
+    const { data, error } = await supabase
+      .from('invoices')
+      .insert(insertPayload)
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const now = new Date().toISOString();
+        const fallbackInv: Invoice = {
+          id: 'inv_' + Math.random().toString(36).substring(2, 12),
+          organizationId: orgId,
+          clientId: clientId || null,
+          clientName: invoiceInput.clientName,
+          clientEmail: invoiceInput.clientEmail,
+          companyName: invoiceInput.companyName || null,
+          invoiceNumber: invoiceInput.invoiceNumber,
+          invoiceAmount: Number(invoiceInput.invoiceAmount),
+          currency: invoiceInput.currency || 'INR',
+          invoiceDate: invoiceDateStr,
+          dueDate: dueDateStr,
+          status: initialStatus,
+          daysOverdue,
+          source: 'MANUAL',
+          sourceReference: null,
+          lastReminderAt: null,
+          reminderCount: 0,
+          nextReminderAt: null,
+          paymentReceivedAt: null,
+          isPaused: false,
+          extractionConfidence: 'HIGH',
+          notes: invoiceInput.notes || null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        localStore.upsertInvoice(fallbackInv);
+        if (clientId) {
+          await recalculateClientTotals(orgId, clientId);
+        }
+        return fallbackInv;
+      }
+      throw new Error(`Failed to create invoice: ${error?.message}`);
+    }
+
+    const created = mapInvoice(data);
+    if (clientId) {
+      await recalculateClientTotals(orgId, clientId);
+    }
+    return created;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const now = new Date().toISOString();
+      const fallbackInv: Invoice = {
+        id: 'inv_' + Math.random().toString(36).substring(2, 12),
+        organizationId: orgId,
+        clientId: clientId || null,
+        clientName: invoiceInput.clientName,
+        clientEmail: invoiceInput.clientEmail,
+        companyName: invoiceInput.companyName || null,
+        invoiceNumber: invoiceInput.invoiceNumber,
+        invoiceAmount: Number(invoiceInput.invoiceAmount),
+        currency: invoiceInput.currency || 'INR',
+        invoiceDate: invoiceDateStr,
+        dueDate: dueDateStr,
+        status: initialStatus,
+        daysOverdue,
+        source: 'MANUAL',
+        sourceReference: null,
+        lastReminderAt: null,
+        reminderCount: 0,
+        nextReminderAt: null,
+        paymentReceivedAt: null,
+        isPaused: false,
+        extractionConfidence: 'HIGH',
+        notes: invoiceInput.notes || null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      localStore.upsertInvoice(fallbackInv);
+      if (clientId) {
+        await recalculateClientTotals(orgId, clientId);
+      }
+      return fallbackInv;
+    }
+    throw err;
   }
-
-  const created = mapInvoice(data);
-
-  // Authoritative recalculation of client totals (no double counting)
-  if (clientId) {
-    await recalculateClientTotals(orgId, clientId);
-  }
-
-  return created;
 }
 
 /**
@@ -915,24 +1318,81 @@ export async function updateInvoiceInternal(
     updated_at: new Date().toISOString(),
   };
 
-  const { data, error } = await supabase
-    .from('invoices')
-    .update(updatePayload)
-    .eq('organization_id', orgId)
-    .eq('id', id)
-    .select('*')
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('invoices')
+      .update(updatePayload)
+      .eq('organization_id', orgId)
+      .eq('id', id)
+      .select('*')
+      .single();
 
-  if (error || !data) {
-    throw new Error('Failed to update invoice in database.');
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const inv = localStore.getInvoice(orgId, id);
+        if (!inv) throw new Error('Invoice not found.');
+        const updated: Invoice = {
+          ...inv,
+          clientName: payload.client_name ?? inv.clientName,
+          clientEmail: payload.client_email ?? inv.clientEmail,
+          companyName: payload.company_name !== undefined ? payload.company_name : inv.companyName,
+          invoiceNumber: payload.invoice_number ?? inv.invoiceNumber,
+          invoiceAmount: payload.invoice_amount !== undefined ? Number(payload.invoice_amount) : inv.invoiceAmount,
+          currency: payload.currency ?? inv.currency,
+          invoiceDate: payload.invoice_date ?? inv.invoiceDate,
+          dueDate: payload.due_date ?? inv.dueDate,
+          status: payload.status ?? inv.status,
+          daysOverdue: payload.days_overdue !== undefined ? payload.days_overdue : inv.daysOverdue,
+          isPaused: payload.is_paused !== undefined ? payload.is_paused : inv.isPaused,
+          paymentReceivedAt: payload.payment_received_at !== undefined ? payload.payment_received_at : inv.paymentReceivedAt,
+          notes: payload.notes !== undefined ? payload.notes : inv.notes,
+          clientId: payload.client_id !== undefined ? payload.client_id : inv.clientId,
+          updatedAt: updatePayload.updated_at,
+        };
+        localStore.upsertInvoice(updated);
+        if (updated.clientId) {
+          await recalculateClientTotals(orgId, updated.clientId);
+        }
+        return updated;
+      }
+      throw new Error('Failed to update invoice in database.');
+    }
+
+    const updated = mapInvoice(data);
+    if (updated.clientId) {
+      await recalculateClientTotals(orgId, updated.clientId);
+    }
+    return updated;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const inv = localStore.getInvoice(orgId, id);
+      if (!inv) throw new Error('Invoice not found.');
+      const updated: Invoice = {
+        ...inv,
+        clientName: payload.client_name ?? inv.clientName,
+        clientEmail: payload.client_email ?? inv.clientEmail,
+        companyName: payload.company_name !== undefined ? payload.company_name : inv.companyName,
+        invoiceNumber: payload.invoice_number ?? inv.invoiceNumber,
+        invoiceAmount: payload.invoice_amount !== undefined ? Number(payload.invoice_amount) : inv.invoiceAmount,
+        currency: payload.currency ?? inv.currency,
+        invoiceDate: payload.invoice_date ?? inv.invoiceDate,
+        dueDate: payload.due_date ?? inv.dueDate,
+        status: payload.status ?? inv.status,
+        daysOverdue: payload.days_overdue !== undefined ? payload.days_overdue : inv.daysOverdue,
+        isPaused: payload.is_paused !== undefined ? payload.is_paused : inv.isPaused,
+        paymentReceivedAt: payload.payment_received_at !== undefined ? payload.payment_received_at : inv.paymentReceivedAt,
+        notes: payload.notes !== undefined ? payload.notes : inv.notes,
+        clientId: payload.client_id !== undefined ? payload.client_id : inv.clientId,
+        updatedAt: updatePayload.updated_at,
+      };
+      localStore.upsertInvoice(updated);
+      if (updated.clientId) {
+        await recalculateClientTotals(orgId, updated.clientId);
+      }
+      return updated;
+    }
+    throw err;
   }
-
-  const updated = mapInvoice(data);
-  if (updated.clientId) {
-    await recalculateClientTotals(orgId, updated.clientId);
-  }
-
-  return updated;
 }
 
 /**
@@ -976,22 +1436,48 @@ export async function deleteInvoice(orgId: string, id: string): Promise<void> {
   const supabase = getSupabase();
   const invoice = await getInvoiceById(orgId, id);
 
-  // 1. Delete associated reminders
-  await supabase
-    .from('reminders')
-    .delete()
-    .eq('organization_id', orgId)
-    .eq('invoice_id', id);
+  try {
+    // 1. Delete associated reminders
+    await supabase
+      .from('reminders')
+      .delete()
+      .eq('organization_id', orgId)
+      .eq('invoice_id', id);
 
-  // 2. Delete invoice
-  const { error } = await supabase
-    .from('invoices')
-    .delete()
-    .eq('organization_id', orgId)
-    .eq('id', id);
+    // 2. Delete invoice
+    const { error } = await supabase
+      .from('invoices')
+      .delete()
+      .eq('organization_id', orgId)
+      .eq('id', id);
 
-  if (error) {
-    throw new Error(`Failed to delete invoice: ${error.message}`);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        localStore.deleteInvoice(id);
+        const reminders = localStore.getReminders(orgId).filter((r) => r.invoiceId === id);
+        for (const rem of reminders) {
+          localStore.deleteReminder(rem.id);
+        }
+        if (invoice?.clientId) {
+          await recalculateClientTotals(orgId, invoice.clientId);
+        }
+        return;
+      }
+      throw new Error(`Failed to delete invoice: ${error.message}`);
+    }
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      localStore.deleteInvoice(id);
+      const reminders = localStore.getReminders(orgId).filter((r) => r.invoiceId === id);
+      for (const rem of reminders) {
+        localStore.deleteReminder(rem.id);
+      }
+      if (invoice?.clientId) {
+        await recalculateClientTotals(orgId, invoice.clientId);
+      }
+      return;
+    }
+    throw err;
   }
 
   // 3. Recalculate client totals
@@ -1019,53 +1505,123 @@ export async function markInvoicePaid(orgId: string, id: string): Promise<Invoic
   const supabase = getSupabase();
   const now = new Date().toISOString();
 
-  // 1. Mark invoice PAID
-  const { data: invData, error: invError } = await supabase
-    .from('invoices')
-    .update({
-      status: 'PAID',
-      payment_received_at: now,
-      days_overdue: 0,
-      is_paused: false,
-      updated_at: now,
-    })
-    .eq('organization_id', orgId)
-    .eq('id', id)
-    .select('*')
-    .single();
+  try {
+    // 1. Mark invoice PAID
+    const { data: invData, error: invError } = await supabase
+      .from('invoices')
+      .update({
+        status: 'PAID',
+        payment_received_at: now,
+        days_overdue: 0,
+        is_paused: false,
+        updated_at: now,
+      })
+      .eq('organization_id', orgId)
+      .eq('id', id)
+      .select('*')
+      .single();
 
-  if (invError || !invData) {
-    throw new Error(`Failed to mark invoice as paid: ${invError?.message}`);
+    if (invError) {
+      if (isSchemaCacheMissing(invError)) {
+        const inv = localStore.getInvoice(orgId, id) || existing;
+        inv.status = 'PAID';
+        inv.paymentReceivedAt = now;
+        inv.daysOverdue = 0;
+        inv.isPaused = false;
+        inv.updatedAt = now;
+        localStore.upsertInvoice(inv);
+
+        // Cancel active/pending reminders in local store
+        const reminders = localStore.getReminders(orgId).filter((r) => r.invoiceId === id);
+        for (const rem of reminders) {
+          if (['SCHEDULED', 'GENERATING', 'PENDING_APPROVAL'].includes(rem.status)) {
+            rem.status = 'CANCELLED';
+            rem.lastError = 'Auto-cancelled: Invoice marked as PAID';
+            rem.updatedAt = now;
+            localStore.upsertReminder(rem);
+          }
+        }
+
+        if (inv.clientId) {
+          await recalculateClientTotals(orgId, inv.clientId);
+        }
+
+        await createAuditLog(orgId, {
+          eventType: 'PAYMENT_RECORDED',
+          entityType: 'INVOICE',
+          entityId: id,
+          message: `Invoice #${inv.invoiceNumber} marked as PAID. All pending reminders halted.`,
+        });
+
+        return inv;
+      }
+      throw new Error(`Failed to mark invoice as paid: ${invError?.message}`);
+    }
+
+    const invoice = mapInvoice(invData);
+
+    // 2. Automatically cancel all active/pending reminders for this invoice (never cancel sent history)
+    await supabase
+      .from('reminders')
+      .update({
+        status: 'CANCELLED',
+        last_error: 'Auto-cancelled: Invoice marked as PAID',
+        updated_at: now,
+      })
+      .eq('organization_id', orgId)
+      .eq('invoice_id', id)
+      .in('status', ['SCHEDULED', 'GENERATING', 'PENDING_APPROVAL']);
+
+    // 3. Authoritatively recalculate client totals
+    if (invoice.clientId) {
+      await recalculateClientTotals(orgId, invoice.clientId);
+    }
+
+    // 4. Log audit event
+    await createAuditLog(orgId, {
+      eventType: 'PAYMENT_RECORDED',
+      entityType: 'INVOICE',
+      entityId: id,
+      message: `Invoice #${invoice.invoiceNumber} marked as PAID. All pending reminders halted.`,
+    });
+
+    return invoice;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const inv = localStore.getInvoice(orgId, id) || existing;
+      inv.status = 'PAID';
+      inv.paymentReceivedAt = now;
+      inv.daysOverdue = 0;
+      inv.isPaused = false;
+      inv.updatedAt = now;
+      localStore.upsertInvoice(inv);
+
+      // Cancel active/pending reminders in local store
+      const reminders = localStore.getReminders(orgId).filter((r) => r.invoiceId === id);
+      for (const rem of reminders) {
+        if (['SCHEDULED', 'GENERATING', 'PENDING_APPROVAL'].includes(rem.status)) {
+          rem.status = 'CANCELLED';
+          rem.lastError = 'Auto-cancelled: Invoice marked as PAID';
+          rem.updatedAt = now;
+          localStore.upsertReminder(rem);
+        }
+      }
+
+      if (inv.clientId) {
+        await recalculateClientTotals(orgId, inv.clientId);
+      }
+
+      await createAuditLog(orgId, {
+        eventType: 'PAYMENT_RECORDED',
+        entityType: 'INVOICE',
+        entityId: id,
+        message: `Invoice #${inv.invoiceNumber} marked as PAID. All pending reminders halted.`,
+      });
+
+      return inv;
+    }
+    throw err;
   }
-
-  const invoice = mapInvoice(invData);
-
-  // 2. Automatically cancel all active/pending reminders for this invoice (never cancel sent history)
-  await supabase
-    .from('reminders')
-    .update({
-      status: 'CANCELLED',
-      last_error: 'Auto-cancelled: Invoice marked as PAID',
-      updated_at: now,
-    })
-    .eq('organization_id', orgId)
-    .eq('invoice_id', id)
-    .in('status', ['SCHEDULED', 'GENERATING', 'PENDING_APPROVAL']);
-
-  // 3. Authoritatively recalculate client totals
-  if (invoice.clientId) {
-    await recalculateClientTotals(orgId, invoice.clientId);
-  }
-
-  // 4. Log audit event
-  await createAuditLog(orgId, {
-    eventType: 'PAYMENT_RECORDED',
-    entityType: 'INVOICE',
-    entityId: id,
-    message: `Invoice #${invoice.invoiceNumber} marked as PAID. All pending reminders halted.`,
-  });
-
-  return invoice;
 }
 
 export async function pauseInvoice(orgId: string, id: string): Promise<Invoice> {
@@ -1147,27 +1703,47 @@ export async function disputeInvoice(
 // ============================================================================
 export async function getReminders(orgId: string): Promise<Reminder[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('reminders')
-    .select('*')
-    .eq('organization_id', orgId)
-    .order('scheduled_at', { ascending: true });
+  try {
+    const { data, error } = await supabase
+      .from('reminders')
+      .select('*')
+      .eq('organization_id', orgId)
+      .order('scheduled_at', { ascending: true });
 
-  if (error || !data) return [];
-  return data.map(mapReminder);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getReminders(orgId);
+      }
+      return [];
+    }
+    return (data || []).map(mapReminder);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getReminders(orgId);
+    return [];
+  }
 }
 
 export async function getReminderById(orgId: string, id: string): Promise<Reminder | null> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('reminders')
-    .select('*')
-    .eq('organization_id', orgId)
-    .eq('id', id)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('reminders')
+      .select('*')
+      .eq('organization_id', orgId)
+      .eq('id', id)
+      .single();
 
-  if (error || !data) return null;
-  return mapReminder(data);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getReminder(orgId, id);
+      }
+      return null;
+    }
+    return data ? mapReminder(data) : null;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getReminder(orgId, id);
+    return null;
+  }
 }
 
 export interface CreateReminderInput {
@@ -1235,42 +1811,96 @@ export async function createReminder(
     throw conflictErr;
   }
 
-  const { data, error } = await supabase
-    .from('reminders')
-    .insert({
-      organization_id: orgId,
-      invoice_id: invoice.id,
-      client_id: client.id,
-      sequence_number: seq,
-      scheduled_at: reminderData.scheduledAt || new Date(Date.now() + 86400000).toISOString(),
-      sent_at: null,
-      status: 'SCHEDULED',
-      tone: reminderData.tone || 'PROFESSIONAL',
-      subject: reminderData.subject,
-      body: reminderData.body,
-      gmail_message_id: null,
-      ai_generated: Boolean(reminderData.aiGenerated),
-      approved_by_user: false,
-      requires_review: reminderData.requiresReview !== false,
-      last_error: null,
-    })
-    .select('*')
-    .single();
+  const insertPayload = {
+    organization_id: orgId,
+    invoice_id: invoice.id,
+    client_id: client.id,
+    sequence_number: seq,
+    scheduled_at: reminderData.scheduledAt || new Date(Date.now() + 86400000).toISOString(),
+    sent_at: null,
+    status: 'SCHEDULED',
+    tone: reminderData.tone || 'PROFESSIONAL',
+    subject: reminderData.subject,
+    body: reminderData.body,
+    gmail_message_id: null,
+    ai_generated: Boolean(reminderData.aiGenerated),
+    approved_by_user: false,
+    requires_review: reminderData.requiresReview !== false,
+    last_error: null,
+  };
 
-  if (error || !data) {
-    if (
-      error?.code === '23505' ||
-      error?.message?.toLowerCase().includes('duplicate') ||
-      error?.message?.toLowerCase().includes('unique')
-    ) {
-      const conflictErr = new Error(`Reminder for sequence #${seq} already exists for this invoice.`);
-      (conflictErr as any).status = 409;
-      (conflictErr as any).code = '23505';
-      throw conflictErr;
+  try {
+    const { data, error } = await supabase
+      .from('reminders')
+      .insert(insertPayload)
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const now = new Date().toISOString();
+        const fallbackRem: Reminder = {
+          id: 'rem_' + Math.random().toString(36).substring(2, 12),
+          organizationId: orgId,
+          invoiceId: invoice.id,
+          clientId: client.id,
+          sequenceNumber: seq,
+          scheduledAt: insertPayload.scheduled_at,
+          sentAt: null,
+          status: 'SCHEDULED',
+          tone: (reminderData.tone as CommunicationStyle) || 'PROFESSIONAL',
+          subject: reminderData.subject,
+          body: reminderData.body,
+          gmailMessageId: null,
+          aiGenerated: Boolean(reminderData.aiGenerated),
+          approvedByUser: false,
+          requiresReview: reminderData.requiresReview !== false,
+          lastError: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        return localStore.upsertReminder(fallbackRem);
+      }
+      if (
+        error?.code === '23505' ||
+        error?.message?.toLowerCase().includes('duplicate') ||
+        error?.message?.toLowerCase().includes('unique')
+      ) {
+        const conflictErr = new Error(`Reminder for sequence #${seq} already exists for this invoice.`);
+        (conflictErr as any).status = 409;
+        (conflictErr as any).code = '23505';
+        throw conflictErr;
+      }
+      throw new Error('Failed to create reminder.');
     }
-    throw new Error('Failed to create reminder.');
+    return mapReminder(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const now = new Date().toISOString();
+      const fallbackRem: Reminder = {
+        id: 'rem_' + Math.random().toString(36).substring(2, 12),
+        organizationId: orgId,
+        invoiceId: invoice.id,
+        clientId: client.id,
+        sequenceNumber: seq,
+        scheduledAt: insertPayload.scheduled_at,
+        sentAt: null,
+        status: 'SCHEDULED',
+        tone: (reminderData.tone as CommunicationStyle) || 'PROFESSIONAL',
+        subject: reminderData.subject,
+        body: reminderData.body,
+        gmailMessageId: null,
+        aiGenerated: Boolean(reminderData.aiGenerated),
+        approvedByUser: false,
+        requiresReview: reminderData.requiresReview !== false,
+        lastError: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return localStore.upsertReminder(fallbackRem);
+    }
+    throw err;
   }
-  return mapReminder(data);
 }
 
 /**
@@ -1284,8 +1914,9 @@ export async function updateReminderDraft(
   updates: ReminderDraftUpdate
 ): Promise<Reminder> {
   const supabase = getSupabase();
+  const now = new Date().toISOString();
   const payload: Record<string, any> = {
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   };
 
   if (updates.scheduledAt !== undefined) payload.scheduled_at = updates.scheduledAt;
@@ -1294,18 +1925,50 @@ export async function updateReminderDraft(
   if (updates.body !== undefined) payload.body = updates.body;
   if (updates.requiresReview !== undefined) payload.requires_review = Boolean(updates.requiresReview);
 
-  const { data, error } = await supabase
-    .from('reminders')
-    .update(payload)
-    .eq('organization_id', orgId)
-    .eq('id', id)
-    .select('*')
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('reminders')
+      .update(payload)
+      .eq('organization_id', orgId)
+      .eq('id', id)
+      .select('*')
+      .single();
 
-  if (error || !data) {
-    throw new Error('Failed to update reminder draft in database.');
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const r = localStore.getReminder(orgId, id);
+        if (!r) throw new Error('Reminder not found.');
+        const updated: Reminder = {
+          ...r,
+          scheduledAt: updates.scheduledAt !== undefined ? updates.scheduledAt : r.scheduledAt,
+          tone: updates.tone !== undefined ? updates.tone : r.tone,
+          subject: updates.subject !== undefined ? updates.subject : r.subject,
+          body: updates.body !== undefined ? updates.body : r.body,
+          requiresReview: updates.requiresReview !== undefined ? Boolean(updates.requiresReview) : r.requiresReview,
+          updatedAt: now,
+        };
+        return localStore.upsertReminder(updated);
+      }
+      throw new Error('Failed to update reminder draft in database.');
+    }
+    return mapReminder(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const r = localStore.getReminder(orgId, id);
+      if (!r) throw new Error('Reminder not found.');
+      const updated: Reminder = {
+        ...r,
+        scheduledAt: updates.scheduledAt !== undefined ? updates.scheduledAt : r.scheduledAt,
+        tone: updates.tone !== undefined ? updates.tone : r.tone,
+        subject: updates.subject !== undefined ? updates.subject : r.subject,
+        body: updates.body !== undefined ? updates.body : r.body,
+        requiresReview: updates.requiresReview !== undefined ? Boolean(updates.requiresReview) : r.requiresReview,
+        updatedAt: now,
+      };
+      return localStore.upsertReminder(updated);
+    }
+    throw err;
   }
-  return mapReminder(data);
 }
 
 export async function updateReminder(
@@ -1361,22 +2024,44 @@ export async function cancelReminder(
   reason: string
 ): Promise<Reminder> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('reminders')
-    .update({
-      status: 'CANCELLED',
-      last_error: `Cancelled: ${reason}`,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('organization_id', orgId)
-    .eq('id', id)
-    .select('*')
-    .single();
+  const now = new Date().toISOString();
 
-  if (error || !data) {
-    throw new Error('Failed to cancel reminder in database.');
+  try {
+    const { data, error } = await supabase
+      .from('reminders')
+      .update({
+        status: 'CANCELLED',
+        last_error: `Cancelled: ${reason}`,
+        updated_at: now,
+      })
+      .eq('organization_id', orgId)
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const r = localStore.getReminder(orgId, id);
+        if (!r) throw new Error('Reminder not found.');
+        r.status = 'CANCELLED';
+        r.lastError = `Cancelled: ${reason}`;
+        r.updatedAt = now;
+        return localStore.upsertReminder(r);
+      }
+      throw new Error('Failed to cancel reminder in database.');
+    }
+    return mapReminder(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const r = localStore.getReminder(orgId, id);
+      if (!r) throw new Error('Reminder not found.');
+      r.status = 'CANCELLED';
+      r.lastError = `Cancelled: ${reason}`;
+      r.updatedAt = now;
+      return localStore.upsertReminder(r);
+    }
+    throw err;
   }
-  return mapReminder(data);
 }
 
 // ============================================================================
@@ -1384,14 +2069,24 @@ export async function cancelReminder(
 // ============================================================================
 export async function getEmailEvents(orgId: string): Promise<EmailEvent[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('email_events')
-    .select('*')
-    .eq('organization_id', orgId)
-    .order('event_timestamp', { ascending: false });
+  try {
+    const { data, error } = await supabase
+      .from('email_events')
+      .select('*')
+      .eq('organization_id', orgId)
+      .order('event_timestamp', { ascending: false });
 
-  if (error || !data) return [];
-  return data.map(mapEmailEvent);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getEmailEvents(orgId);
+      }
+      return [];
+    }
+    return (data || []).map(mapEmailEvent);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getEmailEvents(orgId);
+    return [];
+  }
 }
 
 export async function createEmailEvent(
@@ -1399,42 +2094,99 @@ export async function createEmailEvent(
   data: Omit<EmailEvent, 'id' | 'organizationId' | 'createdAt'>
 ): Promise<EmailEvent> {
   const supabase = getSupabase();
-  const { data: row, error } = await supabase
-    .from('email_events')
-    .insert({
-      organization_id: orgId,
-      invoice_id: data.invoiceId || null,
-      client_id: data.clientId || null,
-      gmail_message_id: data.gmailMessageId || null,
-      thread_id: data.threadId || null,
-      direction: data.direction || 'OUTBOUND',
-      event_type: data.eventType,
-      subject: data.subject,
-      sender: data.sender,
-      recipient: data.recipient,
-      body_preview: data.bodyPreview || null,
-      event_timestamp: data.eventTimestamp || new Date().toISOString(),
-      metadata: data.metadata || null,
-    })
-    .select('*')
-    .single();
+  const now = new Date().toISOString();
+  const payload = {
+    organization_id: orgId,
+    invoice_id: data.invoiceId || null,
+    client_id: data.clientId || null,
+    gmail_message_id: data.gmailMessageId || null,
+    thread_id: data.threadId || null,
+    direction: data.direction || 'OUTBOUND',
+    event_type: data.eventType,
+    subject: data.subject,
+    sender: data.sender,
+    recipient: data.recipient,
+    body_preview: data.bodyPreview || null,
+    event_timestamp: data.eventTimestamp || now,
+    metadata: data.metadata || null,
+  };
 
-  if (error || !row) {
-    throw new Error(`Failed to create email event: ${error?.message}`);
+  try {
+    const { data: row, error } = await supabase
+      .from('email_events')
+      .insert(payload)
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const ee: EmailEvent = {
+          id: 'ee_' + Math.random().toString(36).substring(2, 12),
+          organizationId: orgId,
+          invoiceId: data.invoiceId,
+          clientId: data.clientId,
+          gmailMessageId: data.gmailMessageId,
+          threadId: data.threadId,
+          direction: data.direction || 'OUTBOUND',
+          eventType: data.eventType,
+          subject: data.subject,
+          sender: data.sender,
+          recipient: data.recipient,
+          bodyPreview: data.bodyPreview,
+          eventTimestamp: data.eventTimestamp || now,
+          metadata: data.metadata,
+          createdAt: now,
+        };
+        return localStore.addEmailEvent(ee);
+      }
+      throw new Error(`Failed to create email event: ${error?.message}`);
+    }
+    return mapEmailEvent(row);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const ee: EmailEvent = {
+        id: 'ee_' + Math.random().toString(36).substring(2, 12),
+        organizationId: orgId,
+        invoiceId: data.invoiceId,
+        clientId: data.clientId,
+        gmailMessageId: data.gmailMessageId,
+        threadId: data.threadId,
+        direction: data.direction || 'OUTBOUND',
+        eventType: data.eventType,
+        subject: data.subject,
+        sender: data.sender,
+        recipient: data.recipient,
+        bodyPreview: data.bodyPreview,
+        eventTimestamp: data.eventTimestamp || now,
+        metadata: data.metadata,
+        createdAt: now,
+      };
+      return localStore.addEmailEvent(ee);
+    }
+    throw err;
   }
-  return mapEmailEvent(row);
 }
 
 export async function getAuditLogs(orgId: string): Promise<AuditLog[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('audit_logs')
-    .select('*')
-    .eq('organization_id', orgId)
-    .order('created_at', { ascending: false });
+  try {
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select('*')
+      .eq('organization_id', orgId)
+      .order('created_at', { ascending: false });
 
-  if (error || !data) return [];
-  return data.map(mapAuditLog);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getAuditLogs(orgId);
+      }
+      return [];
+    }
+    return (data || []).map(mapAuditLog);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getAuditLogs(orgId);
+    return [];
+  }
 }
 
 export async function createAuditLog(
@@ -1442,24 +2194,59 @@ export async function createAuditLog(
   data: Omit<AuditLog, 'id' | 'organizationId' | 'createdAt'>
 ): Promise<AuditLog> {
   const supabase = getSupabase();
-  const { data: row, error } = await supabase
-    .from('audit_logs')
-    .insert({
-      organization_id: orgId,
-      user_id: data.userId || null,
-      event_type: data.eventType,
-      entity_type: data.entityType,
-      entity_id: data.entityId,
-      message: data.message,
-      metadata: data.metadata || null,
-    })
-    .select('*')
-    .single();
+  const now = new Date().toISOString();
+  const payload = {
+    organization_id: orgId,
+    user_id: data.userId || null,
+    event_type: data.eventType,
+    entity_type: data.entityType,
+    entity_id: data.entityId,
+    message: data.message,
+    metadata: data.metadata || null,
+  };
 
-  if (error || !row) {
-    throw new Error(`Failed to create audit log: ${error?.message}`);
+  try {
+    const { data: row, error } = await supabase
+      .from('audit_logs')
+      .insert(payload)
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const al: AuditLog = {
+          id: 'log_' + Math.random().toString(36).substring(2, 12),
+          organizationId: orgId,
+          userId: data.userId,
+          eventType: data.eventType,
+          entityType: data.entityType,
+          entityId: data.entityId,
+          message: data.message,
+          metadata: data.metadata,
+          createdAt: now,
+        };
+        return localStore.addAuditLog(al);
+      }
+      throw new Error(`Failed to create audit log: ${error?.message}`);
+    }
+    return mapAuditLog(row);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const al: AuditLog = {
+        id: 'log_' + Math.random().toString(36).substring(2, 12),
+        organizationId: orgId,
+        userId: data.userId,
+        eventType: data.eventType,
+        entityType: data.entityType,
+        entityId: data.entityId,
+        message: data.message,
+        metadata: data.metadata,
+        createdAt: now,
+      };
+      return localStore.addAuditLog(al);
+    }
+    throw err;
   }
-  return mapAuditLog(row);
 }
 
 // ============================================================================
@@ -1467,28 +2254,37 @@ export async function createAuditLog(
 // ============================================================================
 export async function getConnections(orgId: string): Promise<Connection[]> {
   const supabase = getSupabase();
-  const { data } = await supabase
-    .from('connections')
-    .select('*')
-    .eq('organization_id', orgId);
+  try {
+    const { data, error } = await supabase
+      .from('connections')
+      .select('*')
+      .eq('organization_id', orgId);
 
-  const existing = (data || []).map(mapConnection);
-  const providers: ('GMAIL' | 'GOOGLE_SHEETS')[] = ['GMAIL', 'GOOGLE_SHEETS'];
-  for (const p of providers) {
-    if (!existing.some((c) => c.provider === p)) {
-      existing.push({
-        id: `conn_${p.toLowerCase()}_${orgId.slice(0, 8)}`,
-        organizationId: orgId,
-        provider: p,
-        status: 'DISCONNECTED',
-        accountIdentifier: '',
-        scopes: [],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+    if (error && isSchemaCacheMissing(error)) {
+      return localStore.getConnections(orgId);
     }
+
+    const existing = (data || []).map(mapConnection);
+    const providers: ('GMAIL' | 'GOOGLE_SHEETS')[] = ['GMAIL', 'GOOGLE_SHEETS'];
+    for (const p of providers) {
+      if (!existing.some((c) => c.provider === p)) {
+        existing.push({
+          id: `conn_${p.toLowerCase()}_${orgId.slice(0, 8)}`,
+          organizationId: orgId,
+          provider: p,
+          status: 'DISCONNECTED',
+          accountIdentifier: '',
+          scopes: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    }
+    return existing;
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getConnections(orgId);
+    return [];
   }
-  return existing;
 }
 
 export async function upsertConnection(
@@ -1497,28 +2293,63 @@ export async function upsertConnection(
   data: Partial<Connection>
 ): Promise<Connection> {
   const supabase = getSupabase();
-  const { data: row, error } = await supabase
-    .from('connections')
-    .upsert(
-      {
-        organization_id: orgId,
+  const now = new Date().toISOString();
+  try {
+    const { data: row, error } = await supabase
+      .from('connections')
+      .upsert(
+        {
+          organization_id: orgId,
+          provider,
+          status: data.status || 'DISCONNECTED',
+          account_identifier: data.accountIdentifier || '',
+          scopes: data.scopes || [],
+          last_sync_at: data.lastSyncAt || null,
+          sheet_metadata: data.sheetMetadata || null,
+          updated_at: now,
+        },
+        { onConflict: 'organization_id,provider' }
+      )
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const c: Connection = {
+          id: `conn_${provider.toLowerCase()}_${orgId.slice(0, 8)}`,
+          organizationId: orgId,
+          provider,
+          status: data.status || 'DISCONNECTED',
+          accountIdentifier: data.accountIdentifier || '',
+          scopes: data.scopes || [],
+          lastSyncAt: data.lastSyncAt,
+          sheetMetadata: data.sheetMetadata,
+          createdAt: now,
+          updatedAt: now,
+        };
+        return localStore.upsertConnection(c);
+      }
+      throw new Error('Failed to update connection in database.');
+    }
+    return mapConnection(row);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const c: Connection = {
+        id: `conn_${provider.toLowerCase()}_${orgId.slice(0, 8)}`,
+        organizationId: orgId,
         provider,
         status: data.status || 'DISCONNECTED',
-        account_identifier: data.accountIdentifier || '',
+        accountIdentifier: data.accountIdentifier || '',
         scopes: data.scopes || [],
-        last_sync_at: data.lastSyncAt || null,
-        sheet_metadata: data.sheetMetadata || null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'organization_id,provider' }
-    )
-    .select('*')
-    .single();
-
-  if (error || !row) {
-    throw new Error('Failed to update connection in database.');
+        lastSyncAt: data.lastSyncAt,
+        sheetMetadata: data.sheetMetadata,
+        createdAt: now,
+        updatedAt: now,
+      };
+      return localStore.upsertConnection(c);
+    }
+    throw err;
   }
-  return mapConnection(row);
 }
 
 export async function disconnectConnection(
@@ -1526,25 +2357,41 @@ export async function disconnectConnection(
   provider: 'GMAIL' | 'GOOGLE_SHEETS'
 ): Promise<Connection> {
   const supabase = getSupabase();
-  const { data: row, error } = await supabase
-    .from('connections')
-    .update({
-      status: 'DISCONNECTED',
-      account_identifier: '',
-      scopes: [],
-      oauth_access_token_encrypted: null,
-      oauth_refresh_token_encrypted: null,
-      oauth_token_expires_at: null,
-      error_message: null,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('organization_id', orgId)
-    .eq('provider', provider)
-    .select('*')
-    .single();
+  try {
+    const { data: row, error } = await supabase
+      .from('connections')
+      .update({
+        status: 'DISCONNECTED',
+        account_identifier: '',
+        scopes: [],
+        oauth_access_token_encrypted: null,
+        oauth_refresh_token_encrypted: null,
+        oauth_token_expires_at: null,
+        error_message: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('organization_id', orgId)
+      .eq('provider', provider)
+      .select('*')
+      .single();
 
-  if (error || !row) {
-    return {
+    if (error || !row) {
+      const fallbackConn: Connection = {
+        id: `conn_${provider.toLowerCase()}_${orgId.slice(0, 8)}`,
+        organizationId: orgId,
+        provider,
+        status: 'DISCONNECTED',
+        accountIdentifier: '',
+        scopes: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      localStore.upsertConnection(fallbackConn);
+      return fallbackConn;
+    }
+    return mapConnection(row);
+  } catch (err: any) {
+    const fallbackConn: Connection = {
       id: `conn_${provider.toLowerCase()}_${orgId.slice(0, 8)}`,
       organizationId: orgId,
       provider,
@@ -1554,8 +2401,9 @@ export async function disconnectConnection(
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
+    localStore.upsertConnection(fallbackConn);
+    return fallbackConn;
   }
-  return mapConnection(row);
 }
 
 export interface GmailConnectionSecrets {
@@ -1575,27 +2423,37 @@ export interface GmailConnectionSecrets {
  */
 export async function getGmailConnectionSecrets(orgId: string): Promise<GmailConnectionSecrets | null> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('connections')
-    .select('id, organization_id, status, account_identifier, scopes, oauth_access_token_encrypted, oauth_refresh_token_encrypted, oauth_token_expires_at')
-    .eq('organization_id', orgId)
-    .eq('provider', 'GMAIL')
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('connections')
+      .select('id, organization_id, status, account_identifier, scopes, oauth_access_token_encrypted, oauth_refresh_token_encrypted, oauth_token_expires_at')
+      .eq('organization_id', orgId)
+      .eq('provider', 'GMAIL')
+      .single();
 
-  if (error || !data) {
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getConnectionSecrets(orgId);
+      }
+      return null;
+    }
+
+    if (!data) return null;
+
+    return {
+      id: data.id,
+      organizationId: data.organization_id,
+      status: data.status,
+      accountIdentifier: data.account_identifier,
+      encryptedAccessToken: data.oauth_access_token_encrypted || undefined,
+      encryptedRefreshToken: data.oauth_refresh_token_encrypted || undefined,
+      tokenExpiresAt: data.oauth_token_expires_at || undefined,
+      scopes: Array.isArray(data.scopes) ? data.scopes : [],
+    };
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getConnectionSecrets(orgId);
     return null;
   }
-
-  return {
-    id: data.id,
-    organizationId: data.organization_id,
-    status: data.status,
-    accountIdentifier: data.account_identifier,
-    encryptedAccessToken: data.oauth_access_token_encrypted || undefined,
-    encryptedRefreshToken: data.oauth_refresh_token_encrypted || undefined,
-    tokenExpiresAt: data.oauth_token_expires_at || undefined,
-    scopes: Array.isArray(data.scopes) ? data.scopes : [],
-  };
 }
 
 /**
@@ -1612,6 +2470,7 @@ export async function saveGmailOAuthConnection(
   }
 ): Promise<Connection> {
   const supabase = getSupabase();
+  const now = new Date().toISOString();
   const payload: Record<string, any> = {
     organization_id: orgId,
     provider: 'GMAIL',
@@ -1620,28 +2479,84 @@ export async function saveGmailOAuthConnection(
     scopes: data.scopes,
     oauth_access_token_encrypted: data.encryptedAccessToken,
     oauth_token_expires_at: data.tokenExpiresAt || null,
-    last_tested_at: new Date().toISOString(),
-    last_sync_at: new Date().toISOString(),
+    last_tested_at: now,
+    last_sync_at: now,
     error_message: null,
     last_error: null,
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   };
 
   if (data.encryptedRefreshToken) {
     payload.oauth_refresh_token_encrypted = data.encryptedRefreshToken;
   }
 
-  const { data: row, error } = await supabase
-    .from('connections')
-    .upsert(payload, { onConflict: 'organization_id,provider' })
-    .select('*')
-    .single();
+  try {
+    const { data: row, error } = await supabase
+      .from('connections')
+      .upsert(payload, { onConflict: 'organization_id,provider' })
+      .select('*')
+      .single();
 
-  if (error || !row) {
-    throw new Error(`Failed to save Gmail connection: ${error?.message}`);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const conn: Connection = {
+          id: `conn_gmail_${orgId.slice(0, 8)}`,
+          organizationId: orgId,
+          provider: 'GMAIL',
+          status: 'CONNECTED',
+          accountIdentifier: data.accountEmail,
+          scopes: data.scopes,
+          lastTestedAt: now,
+          lastSyncAt: now,
+          createdAt: now,
+          updatedAt: now,
+        };
+        localStore.upsertConnection(conn);
+        localStore.saveConnectionSecrets(orgId, {
+          id: conn.id,
+          organizationId: orgId,
+          status: 'CONNECTED',
+          accountIdentifier: data.accountEmail,
+          encryptedAccessToken: data.encryptedAccessToken,
+          encryptedRefreshToken: data.encryptedRefreshToken,
+          tokenExpiresAt: data.tokenExpiresAt,
+          scopes: data.scopes,
+        });
+        return conn;
+      }
+      throw new Error(`Failed to save Gmail connection: ${error?.message}`);
+    }
+
+    return mapConnection(row);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const conn: Connection = {
+        id: `conn_gmail_${orgId.slice(0, 8)}`,
+        organizationId: orgId,
+        provider: 'GMAIL',
+        status: 'CONNECTED',
+        accountIdentifier: data.accountEmail,
+        scopes: data.scopes,
+        lastTestedAt: now,
+        lastSyncAt: now,
+        createdAt: now,
+        updatedAt: now,
+      };
+      localStore.upsertConnection(conn);
+      localStore.saveConnectionSecrets(orgId, {
+        id: conn.id,
+        organizationId: orgId,
+        status: 'CONNECTED',
+        accountIdentifier: data.accountEmail,
+        encryptedAccessToken: data.encryptedAccessToken,
+        encryptedRefreshToken: data.encryptedRefreshToken,
+        tokenExpiresAt: data.tokenExpiresAt,
+        scopes: data.scopes,
+      });
+      return conn;
+    }
+    throw err;
   }
-
-  return mapConnection(row);
 }
 
 /**
@@ -1654,9 +2569,10 @@ export async function updateGmailConnectionStatus(
   errorMessage?: string
 ): Promise<Connection> {
   const supabase = getSupabase();
+  const now = new Date().toISOString();
   const updates: Record<string, any> = {
     status,
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   };
 
   if (lastTestedAt) {
@@ -1672,19 +2588,57 @@ export async function updateGmailConnectionStatus(
     updates.last_error = null;
   }
 
-  const { data: row, error } = await supabase
-    .from('connections')
-    .update(updates)
-    .eq('organization_id', orgId)
-    .eq('provider', 'GMAIL')
-    .select('*')
-    .single();
+  try {
+    const { data: row, error } = await supabase
+      .from('connections')
+      .update(updates)
+      .eq('organization_id', orgId)
+      .eq('provider', 'GMAIL')
+      .select('*')
+      .single();
 
-  if (error || !row) {
-    throw new Error(`Failed to update Gmail connection status: ${error?.message}`);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const existing = localStore.getConnection(orgId, 'GMAIL') || {
+          id: `conn_gmail_${orgId.slice(0, 8)}`,
+          organizationId: orgId,
+          provider: 'GMAIL' as const,
+          status: 'DISCONNECTED' as const,
+          accountIdentifier: '',
+          scopes: [],
+          createdAt: now,
+          updatedAt: now,
+        };
+        existing.status = status;
+        if (lastTestedAt) existing.lastTestedAt = lastTestedAt;
+        if (errorMessage !== undefined) existing.errorMessage = errorMessage;
+        existing.updatedAt = now;
+        return localStore.upsertConnection(existing);
+      }
+      throw new Error(`Failed to update Gmail connection status: ${error?.message}`);
+    }
+
+    return mapConnection(row);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const existing = localStore.getConnection(orgId, 'GMAIL') || {
+        id: `conn_gmail_${orgId.slice(0, 8)}`,
+        organizationId: orgId,
+        provider: 'GMAIL' as const,
+        status: 'DISCONNECTED' as const,
+        accountIdentifier: '',
+        scopes: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      existing.status = status;
+      if (lastTestedAt) existing.lastTestedAt = lastTestedAt;
+      if (errorMessage !== undefined) existing.errorMessage = errorMessage;
+      existing.updatedAt = now;
+      return localStore.upsertConnection(existing);
+    }
+    throw err;
   }
-
-  return mapConnection(row);
 }
 
 /**
@@ -1709,11 +2663,22 @@ export async function updateGmailRefreshedTokens(
     updates.oauth_refresh_token_encrypted = encryptedRefreshToken;
   }
 
-  await supabase
-    .from('connections')
-    .update(updates)
-    .eq('organization_id', orgId)
-    .eq('provider', 'GMAIL');
+  try {
+    await supabase
+      .from('connections')
+      .update(updates)
+      .eq('organization_id', orgId)
+      .eq('provider', 'GMAIL');
+  } catch {
+    // schema cache missing safe
+  }
+  const secrets = localStore.getConnectionSecrets(orgId);
+  if (secrets) {
+    secrets.encryptedAccessToken = encryptedAccessToken;
+    if (tokenExpiresAt) secrets.tokenExpiresAt = tokenExpiresAt;
+    if (encryptedRefreshToken) secrets.encryptedRefreshToken = encryptedRefreshToken;
+    localStore.saveConnectionSecrets(orgId, secrets);
+  }
 }
 
 /**
@@ -1729,13 +2694,73 @@ export async function disconnectGmailConnection(orgId: string): Promise<Connecti
 // ============================================================================
 export async function getAutomationSettings(orgId: string): Promise<AutomationSettings> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('automation_settings')
-    .select('*')
-    .eq('organization_id', orgId)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('automation_settings')
+      .select('*')
+      .eq('organization_id', orgId)
+      .single();
 
-  if (error || !data) {
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return (
+          localStore.getAutomationSettings(orgId) || {
+            id: '',
+            organizationId: orgId,
+            automaticReminders: true,
+            automaticallyStopWhenPaid: true,
+            avoidWeekends: true,
+            preferredSendingTime: '10:00',
+            timezone: 'Asia/Kolkata',
+            policyTier: 'STANDARD',
+            policyIntervals: {
+              firstReminderDays: 3,
+              secondReminderDays: 10,
+              finalReminderDays: 17,
+            },
+            maxReminders: 3,
+          }
+        );
+      }
+      return {
+        id: '',
+        organizationId: orgId,
+        automaticReminders: true,
+        automaticallyStopWhenPaid: true,
+        avoidWeekends: true,
+        preferredSendingTime: '10:00',
+        timezone: 'Asia/Kolkata',
+        policyTier: 'STANDARD',
+        policyIntervals: {
+          firstReminderDays: 3,
+          secondReminderDays: 10,
+          finalReminderDays: 17,
+        },
+        maxReminders: 3,
+      };
+    }
+    return mapAutomationSettings(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      return (
+        localStore.getAutomationSettings(orgId) || {
+          id: '',
+          organizationId: orgId,
+          automaticReminders: true,
+          automaticallyStopWhenPaid: true,
+          avoidWeekends: true,
+          preferredSendingTime: '10:00',
+          timezone: 'Asia/Kolkata',
+          policyTier: 'STANDARD',
+          policyIntervals: {
+            firstReminderDays: 3,
+            secondReminderDays: 10,
+            finalReminderDays: 17,
+          },
+          maxReminders: 3,
+        }
+      );
+    }
     return {
       id: '',
       organizationId: orgId,
@@ -1753,7 +2778,6 @@ export async function getAutomationSettings(orgId: string): Promise<AutomationSe
       maxReminders: 3,
     };
   }
-  return mapAutomationSettings(data);
 }
 
 export async function updateAutomationSettings(
@@ -1774,27 +2798,82 @@ export async function updateAutomationSettings(
   if (updates.policyIntervals !== undefined) payload.policy_intervals = updates.policyIntervals;
   if (updates.maxReminders !== undefined) payload.max_reminders = updates.maxReminders;
 
-  const { data, error } = await supabase
-    .from('automation_settings')
-    .upsert(payload, { onConflict: 'organization_id' })
-    .select('*')
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('automation_settings')
+      .upsert(payload, { onConflict: 'organization_id' })
+      .select('*')
+      .single();
 
-  if (error || !data) {
-    throw new Error(`Failed to update automation settings: ${error?.message}`);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const current = await getAutomationSettings(orgId);
+        const updated: AutomationSettings = {
+          ...current,
+          ...updates,
+          organizationId: orgId,
+        };
+        return localStore.upsertAutomationSettings(updated);
+      }
+      throw new Error(`Failed to update automation settings: ${error?.message}`);
+    }
+    return mapAutomationSettings(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const current = await getAutomationSettings(orgId);
+      const updated: AutomationSettings = {
+        ...current,
+        ...updates,
+        organizationId: orgId,
+      };
+      return localStore.upsertAutomationSettings(updated);
+    }
+    throw err;
   }
-  return mapAutomationSettings(data);
 }
 
 export async function getAISettings(orgId: string): Promise<AISettings> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('ai_settings')
-    .select('*')
-    .eq('organization_id', orgId)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('ai_settings')
+      .select('*')
+      .eq('organization_id', orgId)
+      .single();
 
-  if (error || !data) {
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return (
+          localStore.getAISettings(orgId) || {
+            id: '',
+            organizationId: orgId,
+            communicationStyle: 'PROFESSIONAL',
+            relationshipAwarePersonalization: true,
+            reviewBeforeSending: true,
+          }
+        );
+      }
+      return {
+        id: '',
+        organizationId: orgId,
+        communicationStyle: 'PROFESSIONAL',
+        relationshipAwarePersonalization: true,
+        reviewBeforeSending: true,
+      };
+    }
+    return mapAISettings(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      return (
+        localStore.getAISettings(orgId) || {
+          id: '',
+          organizationId: orgId,
+          communicationStyle: 'PROFESSIONAL',
+          relationshipAwarePersonalization: true,
+          reviewBeforeSending: true,
+        }
+      );
+    }
     return {
       id: '',
       organizationId: orgId,
@@ -1803,7 +2882,6 @@ export async function getAISettings(orgId: string): Promise<AISettings> {
       reviewBeforeSending: true,
     };
   }
-  return mapAISettings(data);
 }
 
 export async function updateAISettings(
@@ -1820,16 +2898,38 @@ export async function updateAISettings(
   if (updates.reviewBeforeSending !== undefined) payload.review_before_sending = updates.reviewBeforeSending;
   if (updates.customToneInstructions !== undefined) payload.custom_tone_instructions = updates.customToneInstructions;
 
-  const { data, error } = await supabase
-    .from('ai_settings')
-    .upsert(payload, { onConflict: 'organization_id' })
-    .select('*')
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('ai_settings')
+      .upsert(payload, { onConflict: 'organization_id' })
+      .select('*')
+      .single();
 
-  if (error || !data) {
-    throw new Error(`Failed to update AI settings: ${error?.message}`);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const current = await getAISettings(orgId);
+        const updated: AISettings = {
+          ...current,
+          ...updates,
+          organizationId: orgId,
+        };
+        return localStore.upsertAISettings(updated);
+      }
+      throw new Error(`Failed to update AI settings: ${error?.message}`);
+    }
+    return mapAISettings(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const current = await getAISettings(orgId);
+      const updated: AISettings = {
+        ...current,
+        ...updates,
+        organizationId: orgId,
+      };
+      return localStore.upsertAISettings(updated);
+    }
+    throw err;
   }
-  return mapAISettings(data);
 }
 
 // ============================================================================
@@ -1837,13 +2937,55 @@ export async function updateAISettings(
 // ============================================================================
 export async function getSubscription(orgId: string): Promise<Subscription> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('subscriptions')
-    .select('*')
-    .eq('organization_id', orgId)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('subscriptions')
+      .select('*')
+      .eq('organization_id', orgId)
+      .single();
 
-  if (error || !data) {
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return (
+          localStore.getSubscription(orgId) || {
+            id: '',
+            organizationId: orgId,
+            plan: 'FREE',
+            status: 'ACTIVE',
+            currentPeriodStart: new Date().toISOString(),
+            currentPeriodEnd: new Date(Date.now() + 30 * 86400000).toISOString(),
+            cancelAtPeriodEnd: false,
+            limits: getPlanLimits('FREE'),
+          }
+        );
+      }
+      return {
+        id: '',
+        organizationId: orgId,
+        plan: 'FREE',
+        status: 'ACTIVE',
+        currentPeriodStart: new Date().toISOString(),
+        currentPeriodEnd: new Date(Date.now() + 30 * 86400000).toISOString(),
+        cancelAtPeriodEnd: false,
+        limits: getPlanLimits('FREE'),
+      };
+    }
+    return mapSubscription(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      return (
+        localStore.getSubscription(orgId) || {
+          id: '',
+          organizationId: orgId,
+          plan: 'FREE',
+          status: 'ACTIVE',
+          currentPeriodStart: new Date().toISOString(),
+          currentPeriodEnd: new Date(Date.now() + 30 * 86400000).toISOString(),
+          cancelAtPeriodEnd: false,
+          limits: getPlanLimits('FREE'),
+        }
+      );
+    }
     return {
       id: '',
       organizationId: orgId,
@@ -1855,7 +2997,6 @@ export async function getSubscription(orgId: string): Promise<Subscription> {
       limits: getPlanLimits('FREE'),
     };
   }
-  return mapSubscription(data);
 }
 
 export async function updateSubscriptionPlan(
@@ -1865,38 +3006,104 @@ export async function updateSubscriptionPlan(
   const supabase = getSupabase();
   const limits = getPlanLimits(plan);
 
-  const { data, error } = await supabase
-    .from('subscriptions')
-    .upsert(
-      {
-        organization_id: orgId,
+  try {
+    const { data, error } = await supabase
+      .from('subscriptions')
+      .upsert(
+        {
+          organization_id: orgId,
+          plan,
+          status: 'ACTIVE',
+          limits,
+        },
+        { onConflict: 'organization_id' }
+      )
+      .select('*')
+      .single();
+
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const sub: Subscription = {
+          id: 'sub_' + orgId.slice(0, 8),
+          organizationId: orgId,
+          plan,
+          status: 'ACTIVE',
+          currentPeriodStart: new Date().toISOString(),
+          currentPeriodEnd: new Date(Date.now() + 30 * 86400000).toISOString(),
+          cancelAtPeriodEnd: false,
+          limits,
+        };
+        return localStore.upsertSubscription(sub);
+      }
+      throw new Error(`Failed to update subscription: ${error?.message}`);
+    }
+    return mapSubscription(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const sub: Subscription = {
+        id: 'sub_' + orgId.slice(0, 8),
+        organizationId: orgId,
         plan,
         status: 'ACTIVE',
+        currentPeriodStart: new Date().toISOString(),
+        currentPeriodEnd: new Date(Date.now() + 30 * 86400000).toISOString(),
+        cancelAtPeriodEnd: false,
         limits,
-      },
-      { onConflict: 'organization_id' }
-    )
-    .select('*')
-    .single();
-
-  if (error || !data) {
-    throw new Error(`Failed to update subscription: ${error?.message}`);
+      };
+      return localStore.upsertSubscription(sub);
+    }
+    throw err;
   }
-  return mapSubscription(data);
 }
 
 export async function getUsage(orgId: string): Promise<Usage> {
   const supabase = getSupabase();
   const currentMonth = new Date().toISOString().substring(0, 7);
 
-  const { data, error } = await supabase
-    .from('usage')
-    .select('*')
-    .eq('organization_id', orgId)
-    .eq('month', currentMonth)
-    .single();
+  try {
+    const { data, error } = await supabase
+      .from('usage')
+      .select('*')
+      .eq('organization_id', orgId)
+      .eq('month', currentMonth)
+      .single();
 
-  if (error || !data) {
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return (
+          localStore.getUsage(orgId) || {
+            organizationId: orgId,
+            month: currentMonth,
+            activeInvoicesCount: 0,
+            remindersSentCount: 0,
+            aiGenerationsCount: 0,
+            connectedGmailAccounts: 0,
+          }
+        );
+      }
+      return {
+        organizationId: orgId,
+        month: currentMonth,
+        activeInvoicesCount: 0,
+        remindersSentCount: 0,
+        aiGenerationsCount: 0,
+        connectedGmailAccounts: 0,
+      };
+    }
+    return mapUsage(data);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      return (
+        localStore.getUsage(orgId) || {
+          organizationId: orgId,
+          month: currentMonth,
+          activeInvoicesCount: 0,
+          remindersSentCount: 0,
+          aiGenerationsCount: 0,
+          connectedGmailAccounts: 0,
+        }
+      );
+    }
     return {
       organizationId: orgId,
       month: currentMonth,
@@ -1906,7 +3113,6 @@ export async function getUsage(orgId: string): Promise<Usage> {
       connectedGmailAccounts: 0,
     };
   }
-  return mapUsage(data);
 }
 
 // ============================================================================
@@ -1914,14 +3120,24 @@ export async function getUsage(orgId: string): Promise<Usage> {
 // ============================================================================
 export async function getNotifications(orgId: string): Promise<NotificationItem[]> {
   const supabase = getSupabase();
-  const { data, error } = await supabase
-    .from('notifications')
-    .select('*')
-    .eq('organization_id', orgId)
-    .order('created_at', { ascending: false });
+  try {
+    const { data, error } = await supabase
+      .from('notifications')
+      .select('*')
+      .eq('organization_id', orgId)
+      .order('created_at', { ascending: false });
 
-  if (error || !data) return [];
-  return data.map(mapNotification);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        return localStore.getNotifications(orgId);
+      }
+      return [];
+    }
+    return (data || []).map(mapNotification);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) return localStore.getNotifications(orgId);
+    return [];
+  }
 }
 
 export async function createNotification(
@@ -1929,38 +3145,78 @@ export async function createNotification(
   data: Omit<NotificationItem, 'id' | 'organizationId' | 'createdAt'>
 ): Promise<NotificationItem> {
   const supabase = getSupabase();
-  const { data: row, error } = await supabase
-    .from('notifications')
-    .insert({
-      organization_id: orgId,
-      type: data.type || 'INFO',
-      title: data.title,
-      message: data.message,
-      action_url: data.actionUrl || null,
-      read: Boolean(data.read),
-    })
-    .select('*')
-    .single();
+  try {
+    const { data: row, error } = await supabase
+      .from('notifications')
+      .insert({
+        organization_id: orgId,
+        type: data.type || 'INFO',
+        title: data.title,
+        message: data.message,
+        action_url: data.actionUrl || null,
+        read: Boolean(data.read),
+      })
+      .select('*')
+      .single();
 
-  if (error || !row) {
-    throw new Error(`Failed to create notification: ${error?.message}`);
+    if (error) {
+      if (isSchemaCacheMissing(error)) {
+        const notif: NotificationItem = {
+          id: 'notif_' + Math.random().toString(36).substring(2, 12),
+          organizationId: orgId,
+          type: data.type || 'INFO',
+          title: data.title,
+          message: data.message,
+          actionUrl: data.actionUrl || null,
+          read: Boolean(data.read),
+          createdAt: new Date().toISOString(),
+        };
+        return localStore.addNotification(notif);
+      }
+      throw new Error(`Failed to create notification: ${error?.message}`);
+    }
+    return mapNotification(row);
+  } catch (err: any) {
+    if (isSchemaCacheMissing(err)) {
+      const notif: NotificationItem = {
+        id: 'notif_' + Math.random().toString(36).substring(2, 12),
+        organizationId: orgId,
+        type: data.type || 'INFO',
+        title: data.title,
+        message: data.message,
+        actionUrl: data.actionUrl || null,
+        read: Boolean(data.read),
+        createdAt: new Date().toISOString(),
+      };
+      return localStore.addNotification(notif);
+    }
+    throw err;
   }
-  return mapNotification(row);
 }
 
 export async function markNotificationRead(orgId: string, id: string): Promise<void> {
   const supabase = getSupabase();
-  await supabase
-    .from('notifications')
-    .update({ read: true })
-    .eq('organization_id', orgId)
-    .eq('id', id);
+  try {
+    await supabase
+      .from('notifications')
+      .update({ read: true })
+      .eq('organization_id', orgId)
+      .eq('id', id);
+  } catch {
+    // schema cache missing safe
+  }
+  localStore.markNotificationRead(orgId, id);
 }
 
 export async function markAllNotificationsRead(orgId: string): Promise<void> {
   const supabase = getSupabase();
-  await supabase
-    .from('notifications')
-    .update({ read: true })
-    .eq('organization_id', orgId);
+  try {
+    await supabase
+      .from('notifications')
+      .update({ read: true })
+      .eq('organization_id', orgId);
+  } catch {
+    // schema cache missing safe
+  }
+  localStore.markAllNotificationsRead(orgId);
 }

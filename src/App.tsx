@@ -34,8 +34,12 @@ import { OnboardingWizard } from './pages/app/OnboardingWizard';
 import { AdminPage } from './pages/admin/AdminPage';
 
 function AppContent() {
-  const { user } = useApp();
-  const [currentPath, setCurrentPath] = useState<string>('/app/dashboard');
+  const { user, isAuthenticated, isLoadingAuth } = useApp();
+  const [currentPath, setCurrentPath] = useState<string>(() => {
+    const hash = window.location.hash.replace(/^#/, '');
+    if (hash) return hash;
+    return '/login';
+  });
   const [isAddInvoiceOpen, setIsAddInvoiceOpen] = useState(false);
 
   // Initialize or read browser hash if present
@@ -60,6 +64,29 @@ function AppContent() {
     window.location.hash = path;
     window.scrollTo(0, 0);
   };
+
+  // Enforce session boundary for protected application routes
+  useEffect(() => {
+    if (isLoadingAuth) return;
+
+    const isApp = currentPath.startsWith('/app') || currentPath === '/admin';
+    if (!isAuthenticated && isApp) {
+      navigate('/login');
+    } else if (isAuthenticated && (currentPath === '/login' || currentPath === '/signup' || currentPath.startsWith('/auth/callback'))) {
+      navigate('/app/dashboard');
+    }
+  }, [isLoadingAuth, isAuthenticated, currentPath]);
+
+  if (isLoadingAuth) {
+    return (
+      <div className="min-h-screen bg-[#fdfaf5] flex flex-col items-center justify-center">
+        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#3c473a] text-white font-black text-lg shadow-md animate-pulse">
+          IC
+        </div>
+        <p className="mt-4 text-xs font-semibold text-[#8b9789]">Verifying authenticated session…</p>
+      </div>
+    );
+  }
 
   const isAppRoute = currentPath.startsWith('/app');
   const isAdminRoute = currentPath === '/admin';

@@ -45,7 +45,7 @@ export async function apiRequest<T = any>(endpoint: string, options: RequestOpti
   const url = endpoint.startsWith('/') ? endpoint : `/api/${endpoint}`;
 
   const response = await fetch(url, {
-    credentials: 'same-origin',
+    credentials: 'include',
     ...options,
     headers,
   });
@@ -62,6 +62,7 @@ export async function apiRequest<T = any>(endpoint: string, options: RequestOpti
     }
     const err = new Error(errorMessage);
     if (errorCode) (err as any).code = errorCode;
+    (err as any).status = response.status;
     throw err;
   }
 

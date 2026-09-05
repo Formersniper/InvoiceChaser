@@ -29,6 +29,7 @@ import {
   INITIAL_USAGE,
 } from '../utils/storage';
 import { api, getStoredOrgId, setStoredOrgId } from '../utils/api';
+import { getClientSupabase, ensureClientSupabase } from '../lib/supabase';
 
 export interface AppContextType {
   // Auth state
@@ -39,6 +40,8 @@ export interface AppContextType {
   organization: Organization;
   organizations: Organization[];
   login: (email: string, password?: string) => Promise<boolean>;
+  loginWithGoogle: () => Promise<void>;
+  syncGoogleSession: (payload: { accessToken?: string; refreshToken?: string; code?: string }) => Promise<boolean>;
   signup: (email: string, password: string, name: string, companyName: string) => Promise<boolean>;
   logout: () => Promise<void>;
   switchOrganization: (orgId: string) => Promise<void>;
@@ -185,12 +188,82 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   }, []);
 
+  // Authoritative session sync from Supabase OAuth credentials
+  const syncGoogleSession = useCallback(
+    async (payload: { accessToken?: string; refreshToken?: string; code?: string }): Promise<boolean> => {
+      try {
+        setIsLoadingAuth(true);
+        const res = await api.post('/api/auth/session', payload);
+        setUser(res.user);
+        setOrganization(res.organization);
+        setStoredOrgId(res.organization.id);
+        setOrganizations(res.workspace?.organizations || [res.organization]);
+        setMembership(res.workspace?.membership || null);
+        if (res.workspace) {
+          setAutomationSettings(res.workspace.automationSettings);
+          setAiSettings(res.workspace.aiSettings);
+          setSubscription(res.workspace.subscription);
+          setUsage({
+            ...res.workspace.usage,
+            remindersSentThisMonth: res.workspace.usage?.remindersSentCount || 0,
+          });
+        }
+        setIsAuthenticated(true);
+        await fetchOrgData(res.organization.id);
+        return true;
+      } catch (err) {
+        console.error('Failed to sync Google session with backend:', err);
+        setIsAuthenticated(false);
+        throw err;
+      } finally {
+        setIsLoadingAuth(false);
+      }
+    },
+    [fetchOrgData]
+  );
+
   // Initialize session on mount
   useEffect(() => {
+    let isMounted = true;
+
     async function initSession() {
       setIsLoadingAuth(true);
       try {
+        // 1. Detect if OAuth callback tokens or auth codes are present in the URL
+        const rawHash = window.location.hash || '';
+        const rawSearch = window.location.search || '';
+        const hasOAuthParams =
+          rawHash.includes('access_token=') ||
+          rawHash.includes('error=') ||
+          rawSearch.includes('code=') ||
+          rawSearch.includes('error=');
+
+        if (hasOAuthParams) {
+          let accessToken: string | undefined;
+          let refreshToken: string | undefined;
+          let code: string | undefined;
+
+          if (rawHash.includes('access_token=')) {
+            const params = new URLSearchParams(rawHash.replace(/^#\/?/, '').replace(/^auth\/callback&?/, ''));
+            accessToken = params.get('access_token') || undefined;
+            refreshToken = params.get('refresh_token') || undefined;
+          }
+          if (rawSearch.includes('code=')) {
+            const params = new URLSearchParams(rawSearch.replace(/^\?/, ''));
+            code = params.get('code') || undefined;
+          }
+
+          if (accessToken || code) {
+            // Immediately clean authentication tokens from URL bar to prevent leakage
+            window.history.replaceState(null, '', window.location.pathname);
+            await syncGoogleSession({ accessToken, refreshToken, code });
+            return;
+          }
+        }
+
+        // 2. Authoritative backend session verification using secure httpOnly cookie
         const res = await api.get('/api/auth/me');
+        if (!isMounted) return;
         setUser(res.user);
         const workspace = res.workspace;
         setOrganization(workspace.organization);
@@ -207,15 +280,150 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setIsAuthenticated(true);
         await fetchOrgData(workspace.organization.id);
       } catch {
-        // No active session cookie or session expired
+        if (!isMounted) return;
         setIsAuthenticated(false);
+        setUser(INITIAL_USER);
+        setMembership(null);
       } finally {
-        setIsLoadingAuth(false);
+        if (isMounted) {
+          setIsLoadingAuth(false);
+        }
       }
     }
 
     initSession();
-  }, [fetchOrgData]);
+
+    // 3. Supabase Auth State Change Listener (handles TOKEN_REFRESHED, SIGNED_OUT)
+    const supabase = getClientSupabase();
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_OUT') {
+        setIsAuthenticated(false);
+        setUser(INITIAL_USER);
+        setMembership(null);
+      } else if (event === 'TOKEN_REFRESHED' && session?.access_token) {
+        try {
+          await api.post('/api/auth/session', {
+            accessToken: session.access_token,
+            refreshToken: session.refresh_token,
+          });
+        } catch (err) {
+          console.error('Failed to sync refreshed session token with backend:', err);
+        }
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      authListener?.subscription?.unsubscribe();
+    };
+  }, [fetchOrgData, syncGoogleSession]);
+
+  // Google-first authentication
+  const loginWithGoogle = async (): Promise<void> => {
+    const supabase = await ensureClientSupabase();
+    const callbackUrl = `${window.location.origin}/auth/callback`;
+
+    // Strict identity scopes: openid, email, profile. Never gmail.readonly during sign-in.
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: callbackUrl,
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'select_account',
+        },
+        scopes: 'openid email profile',
+        skipBrowserRedirect: true,
+      },
+    });
+
+    if (error) {
+      throw new Error(error.message || 'Failed to initialize Google Sign-In with Supabase.');
+    }
+
+    if (!data?.url) {
+      throw new Error('Supabase did not return an authorization URL for Google Sign-In.');
+    }
+
+    // Open popup for Google Sign-In
+    const width = 540;
+    const height = 640;
+    const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
+    const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
+
+    const popup = window.open(
+      data.url,
+      'supabase_google_signin',
+      `width=${width},height=${height},left=${left},top=${top},scrollbars=yes,resizable=yes`
+    );
+
+    if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+      if (window.self === window.top) {
+        window.location.href = data.url;
+        return;
+      }
+      throw new Error('Popup blocked by browser. Please enable popups for InvoiceChaser to continue with Google.');
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      let resolved = false;
+
+      const messageHandler = async (event: MessageEvent) => {
+        if (event.data?.type === 'SUPABASE_OAUTH_CALLBACK') {
+          resolved = true;
+          window.removeEventListener('message', messageHandler);
+          clearInterval(pollTimer);
+
+          try {
+            const { hash, search } = event.data;
+            let accessToken: string | undefined;
+            let refreshToken: string | undefined;
+            let code: string | undefined;
+
+            if (hash) {
+              const params = new URLSearchParams(hash.replace(/^#/, ''));
+              accessToken = params.get('access_token') || undefined;
+              refreshToken = params.get('refresh_token') || undefined;
+              const errorDesc = params.get('error_description');
+              if (errorDesc) {
+                throw new Error(decodeURIComponent(errorDesc.replace(/\\+/g, ' ')));
+              }
+            }
+
+            if (search) {
+              const params = new URLSearchParams(search.replace(/^\\?/, ''));
+              code = params.get('code') || undefined;
+              const errorDesc = params.get('error_description');
+              if (errorDesc) {
+                throw new Error(decodeURIComponent(errorDesc.replace(/\\+/g, ' ')));
+              }
+            }
+
+            if (!accessToken && !code) {
+              throw new Error('No authentication tokens or authorization code received from Google.');
+            }
+
+            await syncGoogleSession({ accessToken, refreshToken, code });
+            resolve();
+          } catch (err: unknown) {
+            reject(err);
+          }
+        }
+      };
+
+      window.addEventListener('message', messageHandler);
+
+      const pollTimer = setInterval(() => {
+        if (popup.closed) {
+          clearInterval(pollTimer);
+          window.removeEventListener('message', messageHandler);
+          if (!resolved) {
+            reject(new Error('Google authentication window was closed.'));
+          }
+        }
+      }, 500);
+    });
+  };
 
   // Public Auth Actions
   const login = async (email: string, password?: string): Promise<boolean> => {
@@ -293,6 +501,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const logout = async () => {
     try {
+      const supabase = getClientSupabase();
+      await supabase.auth.signOut().catch(() => {});
+    } catch {
+      // ignore
+    }
+    try {
       await api.post('/api/auth/logout');
     } catch {
       // ignore
@@ -300,7 +514,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setStoredOrgId(null);
     setIsAuthenticated(false);
     setUser(INITIAL_USER);
+    setMembership(null);
     setOrganization(INITIAL_ORG);
+    setOrganizations([INITIAL_ORG]);
     setInvoices([]);
     setClients([]);
     setReminders([]);
@@ -667,6 +883,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         organization,
         organizations,
         login,
+        loginWithGoogle,
+        syncGoogleSession,
         signup,
         logout,
         switchOrganization,

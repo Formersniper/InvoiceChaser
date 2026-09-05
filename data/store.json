@@ -1,0 +1,1066 @@
+{
+  "users": {
+    "a9f19c47-df99-47dd-a24c-ed14d2f85b4d": {
+      "id": "a9f19c47-df99-47dd-a24c-ed14d2f85b4d",
+      "email": "test_1788591524@invoicechaser.test",
+      "name": "Test Agent",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Test%20Agent"
+    },
+    "049d5c20-489e-4792-8d15-5a0a90967cfe": {
+      "id": "049d5c20-489e-4792-8d15-5a0a90967cfe",
+      "email": "auth_tester_1788591534860@test.com",
+      "name": "Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Tester"
+    },
+    "1e7e512a-843c-4572-9979-a10f26125682": {
+      "id": "1e7e512a-843c-4572-9979-a10f26125682",
+      "email": "auth_tester_1788591552822@test.com",
+      "name": "Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Tester"
+    },
+    "73074fcd-a7df-40a7-acfa-774c095a0f9a": {
+      "id": "73074fcd-a7df-40a7-acfa-774c095a0f9a",
+      "email": "gmail_tester_1788591640561@test.com",
+      "name": "Gmail Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Gmail%20Tester"
+    },
+    "531ffcea-d76f-4f53-b862-e4586f157c0c": {
+      "id": "531ffcea-d76f-4f53-b862-e4586f157c0c",
+      "email": "gmail_tester_1788591984115@test.com",
+      "name": "Gmail Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Gmail%20Tester"
+    },
+    "5b14f67e-6206-477b-9928-1de81651af53": {
+      "id": "5b14f67e-6206-477b-9928-1de81651af53",
+      "email": "gmail_tester_1788592027512@test.com",
+      "name": "Gmail Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Gmail%20Tester"
+    },
+    "d74912e9-0c4c-4a85-a1f1-fe05ed482f35": {
+      "id": "d74912e9-0c4c-4a85-a1f1-fe05ed482f35",
+      "email": "gmail_tester_1788592040538@test.com",
+      "name": "Gmail Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Gmail%20Tester"
+    },
+    "fe82b969-bc5e-43c6-b420-ee58ea85fac4": {
+      "id": "fe82b969-bc5e-43c6-b420-ee58ea85fac4",
+      "email": "crud_tester_1788592072902@test.com",
+      "name": "CRUD Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=CRUD%20Tester"
+    },
+    "7c7582d2-f570-4f91-af24-f3b1a34f6d93": {
+      "id": "7c7582d2-f570-4f91-af24-f3b1a34f6d93",
+      "email": "crud_tester2_1788592151798@test.com",
+      "name": "CRUD Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=CRUD%20Tester"
+    },
+    "94ea1f04-70f5-479b-95b3-c4c6b1ecdbf9": {
+      "id": "94ea1f04-70f5-479b-95b3-c4c6b1ecdbf9",
+      "email": "crud_tester3_1788592156709@test.com",
+      "name": "CRUD Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=CRUD%20Tester"
+    },
+    "ee0e281b-b78f-4675-8eaf-1e3a61ce0397": {
+      "id": "ee0e281b-b78f-4675-8eaf-1e3a61ce0397",
+      "email": "crud_tester4_1788592175060@test.com",
+      "name": "CRUD Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=CRUD%20Tester"
+    },
+    "3ae034cf-dcfa-4a3f-99e4-52eda128d467": {
+      "id": "3ae034cf-dcfa-4a3f-99e4-52eda128d467",
+      "email": "suite_tester_1788592257168@test.com",
+      "name": "Suite Tester",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Suite%20Tester"
+    }
+  },
+  "organizations": {
+    "org_vop51qvyq2": {
+      "id": "org_vop51qvyq2",
+      "name": "Agent Corp",
+      "slug": "agent-corp-tsxg",
+      "ownerUserId": "a9f19c47-df99-47dd-a24c-ed14d2f85b4d",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T06:58:45.012Z",
+      "updatedAt": "2026-09-05T06:58:45.012Z"
+    },
+    "org_7xr4nwludl": {
+      "id": "org_7xr4nwludl",
+      "name": "Acme Inc",
+      "slug": "acme-inc-watv",
+      "ownerUserId": "049d5c20-489e-4792-8d15-5a0a90967cfe",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T06:58:55.441Z",
+      "updatedAt": "2026-09-05T06:58:55.441Z"
+    },
+    "org_ccq97dykex": {
+      "id": "org_ccq97dykex",
+      "name": "Acme Inc",
+      "slug": "acme-inc-xph4",
+      "ownerUserId": "1e7e512a-843c-4572-9979-a10f26125682",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T06:59:13.318Z",
+      "updatedAt": "2026-09-05T06:59:13.318Z"
+    },
+    "org_m90t1u6yb2": {
+      "id": "org_m90t1u6yb2",
+      "name": "Gmail Corp",
+      "slug": "gmail-corp-ihsv",
+      "ownerUserId": "73074fcd-a7df-40a7-acfa-774c095a0f9a",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T07:00:41.166Z",
+      "updatedAt": "2026-09-05T07:00:41.166Z"
+    },
+    "org_yzsbaeut65": {
+      "id": "org_yzsbaeut65",
+      "name": "Gmail Corp",
+      "slug": "gmail-corp-2xpf",
+      "ownerUserId": "531ffcea-d76f-4f53-b862-e4586f157c0c",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T07:06:25.198Z",
+      "updatedAt": "2026-09-05T07:06:25.198Z"
+    },
+    "org_fchhiqze7z": {
+      "id": "org_fchhiqze7z",
+      "name": "Gmail Corp",
+      "slug": "gmail-corp-1ovr",
+      "ownerUserId": "5b14f67e-6206-477b-9928-1de81651af53",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T07:07:07.972Z",
+      "updatedAt": "2026-09-05T07:07:07.972Z"
+    },
+    "org_kieaptut7a": {
+      "id": "org_kieaptut7a",
+      "name": "Gmail Corp",
+      "slug": "gmail-corp-w4l8",
+      "ownerUserId": "d74912e9-0c4c-4a85-a1f1-fe05ed482f35",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T07:07:21.015Z",
+      "updatedAt": "2026-09-05T07:07:21.015Z"
+    },
+    "org_yn2847spvs": {
+      "id": "org_yn2847spvs",
+      "name": "CRUD Corp",
+      "slug": "crud-corp-r8wu",
+      "ownerUserId": "fe82b969-bc5e-43c6-b420-ee58ea85fac4",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T07:07:53.450Z",
+      "updatedAt": "2026-09-05T07:07:53.450Z"
+    },
+    "org_086lcun6hw": {
+      "id": "org_086lcun6hw",
+      "name": "CRUD Corp",
+      "slug": "crud-corp-0g2f",
+      "ownerUserId": "7c7582d2-f570-4f91-af24-f3b1a34f6d93",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T07:09:12.835Z",
+      "updatedAt": "2026-09-05T07:09:12.835Z"
+    },
+    "org_51e70l1hcj": {
+      "id": "org_51e70l1hcj",
+      "name": "CRUD Corp",
+      "slug": "crud-corp-xo7d",
+      "ownerUserId": "94ea1f04-70f5-479b-95b3-c4c6b1ecdbf9",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T07:09:17.218Z",
+      "updatedAt": "2026-09-05T07:09:17.218Z"
+    },
+    "org_y0irgv0wh1": {
+      "id": "org_y0irgv0wh1",
+      "name": "CRUD Corp",
+      "slug": "crud-corp-e1tg",
+      "ownerUserId": "ee0e281b-b78f-4675-8eaf-1e3a61ce0397",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T07:09:35.584Z",
+      "updatedAt": "2026-09-05T07:09:35.584Z"
+    },
+    "org_6d3pevtnxf": {
+      "id": "org_6d3pevtnxf",
+      "name": "Nexus Dynamics",
+      "slug": "nexus-dynamics-487r",
+      "ownerUserId": "3ae034cf-dcfa-4a3f-99e4-52eda128d467",
+      "timezone": "Asia/Kolkata",
+      "currency": "INR",
+      "createdAt": "2026-09-05T07:10:57.726Z",
+      "updatedAt": "2026-09-05T07:10:57.726Z"
+    }
+  },
+  "memberships": {
+    "mem_0nwm6pfs23": {
+      "id": "mem_0nwm6pfs23",
+      "organizationId": "org_vop51qvyq2",
+      "userId": "a9f19c47-df99-47dd-a24c-ed14d2f85b4d",
+      "role": "owner",
+      "createdAt": "2026-09-05T06:58:45.012Z"
+    },
+    "mem_2dui8uple4": {
+      "id": "mem_2dui8uple4",
+      "organizationId": "org_7xr4nwludl",
+      "userId": "049d5c20-489e-4792-8d15-5a0a90967cfe",
+      "role": "owner",
+      "createdAt": "2026-09-05T06:58:55.441Z"
+    },
+    "mem_rg96gfy53d": {
+      "id": "mem_rg96gfy53d",
+      "organizationId": "org_ccq97dykex",
+      "userId": "1e7e512a-843c-4572-9979-a10f26125682",
+      "role": "owner",
+      "createdAt": "2026-09-05T06:59:13.318Z"
+    },
+    "mem_xsiv0hgh3j": {
+      "id": "mem_xsiv0hgh3j",
+      "organizationId": "org_m90t1u6yb2",
+      "userId": "73074fcd-a7df-40a7-acfa-774c095a0f9a",
+      "role": "owner",
+      "createdAt": "2026-09-05T07:00:41.166Z"
+    },
+    "mem_szlvhwuho8": {
+      "id": "mem_szlvhwuho8",
+      "organizationId": "org_yzsbaeut65",
+      "userId": "531ffcea-d76f-4f53-b862-e4586f157c0c",
+      "role": "owner",
+      "createdAt": "2026-09-05T07:06:25.198Z"
+    },
+    "mem_rmqr68x2zq": {
+      "id": "mem_rmqr68x2zq",
+      "organizationId": "org_fchhiqze7z",
+      "userId": "5b14f67e-6206-477b-9928-1de81651af53",
+      "role": "owner",
+      "createdAt": "2026-09-05T07:07:07.972Z"
+    },
+    "mem_4uhb41den7": {
+      "id": "mem_4uhb41den7",
+      "organizationId": "org_kieaptut7a",
+      "userId": "d74912e9-0c4c-4a85-a1f1-fe05ed482f35",
+      "role": "owner",
+      "createdAt": "2026-09-05T07:07:21.015Z"
+    },
+    "mem_yyks25hvsa": {
+      "id": "mem_yyks25hvsa",
+      "organizationId": "org_yn2847spvs",
+      "userId": "fe82b969-bc5e-43c6-b420-ee58ea85fac4",
+      "role": "owner",
+      "createdAt": "2026-09-05T07:07:53.450Z"
+    },
+    "mem_lkoif223h5": {
+      "id": "mem_lkoif223h5",
+      "organizationId": "org_086lcun6hw",
+      "userId": "7c7582d2-f570-4f91-af24-f3b1a34f6d93",
+      "role": "owner",
+      "createdAt": "2026-09-05T07:09:12.835Z"
+    },
+    "mem_lf6zxyable": {
+      "id": "mem_lf6zxyable",
+      "organizationId": "org_51e70l1hcj",
+      "userId": "94ea1f04-70f5-479b-95b3-c4c6b1ecdbf9",
+      "role": "owner",
+      "createdAt": "2026-09-05T07:09:17.218Z"
+    },
+    "mem_tq86ms43fh": {
+      "id": "mem_tq86ms43fh",
+      "organizationId": "org_y0irgv0wh1",
+      "userId": "ee0e281b-b78f-4675-8eaf-1e3a61ce0397",
+      "role": "owner",
+      "createdAt": "2026-09-05T07:09:35.584Z"
+    },
+    "mem_vgy5nc6932": {
+      "id": "mem_vgy5nc6932",
+      "organizationId": "org_6d3pevtnxf",
+      "userId": "3ae034cf-dcfa-4a3f-99e4-52eda128d467",
+      "role": "owner",
+      "createdAt": "2026-09-05T07:10:57.726Z"
+    }
+  },
+  "clients": {
+    "cli_nf9nby8fmp": {
+      "id": "cli_nf9nby8fmp",
+      "organizationId": "org_y0irgv0wh1",
+      "name": "Acme Client",
+      "email": "client@acme.com",
+      "companyName": "Acme Industries",
+      "relationshipType": "REGULAR",
+      "paymentReliabilityScore": 85,
+      "averagePaymentDelayDays": 0,
+      "totalInvoiced": 50000,
+      "totalPaid": 50000,
+      "totalOutstanding": 0,
+      "neverContact": false,
+      "notes": null,
+      "createdAt": "2026-09-05T07:09:36.035Z",
+      "updatedAt": "2026-09-05T07:09:36.035Z"
+    },
+    "cli_9elgh1d5cu": {
+      "id": "cli_9elgh1d5cu",
+      "organizationId": "org_6d3pevtnxf",
+      "name": "Sarah Connor",
+      "email": "sarah@cyberdyne.com",
+      "companyName": "Cyberdyne Systems",
+      "relationshipType": "VIP",
+      "paymentReliabilityScore": 85,
+      "averagePaymentDelayDays": 0,
+      "totalInvoiced": 75000,
+      "totalPaid": 75000,
+      "totalOutstanding": 0,
+      "neverContact": false,
+      "notes": null,
+      "createdAt": "2026-09-05T07:10:58.044Z",
+      "updatedAt": "2026-09-05T07:10:58.044Z"
+    }
+  },
+  "invoices": {
+    "inv_gbml3mk0gm": {
+      "id": "inv_gbml3mk0gm",
+      "organizationId": "org_y0irgv0wh1",
+      "clientId": "cli_nf9nby8fmp",
+      "clientName": "Acme Client",
+      "clientEmail": "client@acme.com",
+      "companyName": "Acme Industries",
+      "invoiceNumber": "INV-2026-001",
+      "invoiceAmount": 50000,
+      "currency": "INR",
+      "invoiceDate": "2026-09-05",
+      "dueDate": "2026-09-20",
+      "status": "PAID",
+      "daysOverdue": 0,
+      "source": "MANUAL",
+      "sourceReference": null,
+      "lastReminderAt": null,
+      "reminderCount": 0,
+      "nextReminderAt": null,
+      "paymentReceivedAt": "2026-09-05T07:09:36.468Z",
+      "isPaused": false,
+      "extractionConfidence": "HIGH",
+      "notes": "Initial consulting",
+      "createdAt": "2026-09-05T07:09:36.260Z",
+      "updatedAt": "2026-09-05T07:09:36.468Z"
+    },
+    "inv_8kqickceli": {
+      "id": "inv_8kqickceli",
+      "organizationId": "org_6d3pevtnxf",
+      "clientId": "cli_9elgh1d5cu",
+      "clientName": "Sarah Connor",
+      "clientEmail": "sarah@cyberdyne.com",
+      "companyName": "Cyberdyne Systems",
+      "invoiceNumber": "INV-9901",
+      "invoiceAmount": 75000,
+      "currency": "INR",
+      "invoiceDate": "2026-09-05",
+      "dueDate": "2026-09-30",
+      "status": "PAID",
+      "daysOverdue": 0,
+      "source": "MANUAL",
+      "sourceReference": null,
+      "lastReminderAt": null,
+      "reminderCount": 0,
+      "nextReminderAt": null,
+      "paymentReceivedAt": "2026-09-05T07:10:58.794Z",
+      "isPaused": false,
+      "extractionConfidence": "HIGH",
+      "notes": "Quarterly retainer",
+      "createdAt": "2026-09-05T07:10:58.242Z",
+      "updatedAt": "2026-09-05T07:10:58.794Z"
+    }
+  },
+  "reminders": {
+    "rem_szg2fmkm6y": {
+      "id": "rem_szg2fmkm6y",
+      "organizationId": "org_6d3pevtnxf",
+      "invoiceId": "inv_8kqickceli",
+      "clientId": "cli_9elgh1d5cu",
+      "sequenceNumber": 1,
+      "scheduledAt": "2026-09-06T07:10:58.431Z",
+      "sentAt": null,
+      "status": "CANCELLED",
+      "tone": "POLITE",
+      "subject": "Friendly Note: Invoice #INV-9901 is due soon",
+      "body": "Hi Sarah, checking in regarding invoice #INV-9901.",
+      "gmailMessageId": null,
+      "aiGenerated": true,
+      "approvedByUser": false,
+      "requiresReview": true,
+      "lastError": "Auto-cancelled: Invoice marked as PAID",
+      "createdAt": "2026-09-05T07:10:58.546Z",
+      "updatedAt": "2026-09-05T07:10:58.794Z"
+    }
+  },
+  "emailEvents": {},
+  "auditLogs": {
+    "log_gmurx1g6j0": {
+      "id": "log_gmurx1g6j0",
+      "organizationId": "org_kieaptut7a",
+      "userId": "d74912e9-0c4c-4a85-a1f1-fe05ed482f35",
+      "eventType": "INTEGRATION_CONNECTED",
+      "entityType": "INTEGRATION",
+      "entityId": "GMAIL",
+      "message": "Initiated Google OAuth authorization flow for Gmail.",
+      "createdAt": "2026-09-05T07:07:21.371Z"
+    },
+    "log_f8hgk0qgt4": {
+      "id": "log_f8hgk0qgt4",
+      "organizationId": "org_y0irgv0wh1",
+      "userId": "ee0e281b-b78f-4675-8eaf-1e3a61ce0397",
+      "eventType": "CLIENT_CREATED",
+      "entityType": "CLIENT",
+      "entityId": "cli_nf9nby8fmp",
+      "message": "Added client Acme Client (Acme Industries).",
+      "createdAt": "2026-09-05T07:09:36.061Z"
+    },
+    "log_wy10u9a9cd": {
+      "id": "log_wy10u9a9cd",
+      "organizationId": "org_y0irgv0wh1",
+      "userId": "ee0e281b-b78f-4675-8eaf-1e3a61ce0397",
+      "eventType": "INVOICE_CREATED",
+      "entityType": "INVOICE",
+      "entityId": "inv_gbml3mk0gm",
+      "message": "Created invoice #INV-2026-001 for Acme Client (INR 50,000).",
+      "createdAt": "2026-09-05T07:09:36.306Z"
+    },
+    "log_sqvpz9c2xe": {
+      "id": "log_sqvpz9c2xe",
+      "organizationId": "org_y0irgv0wh1",
+      "eventType": "PAYMENT_RECORDED",
+      "entityType": "INVOICE",
+      "entityId": "inv_gbml3mk0gm",
+      "message": "Invoice #INV-2026-001 marked as PAID. All pending reminders halted.",
+      "createdAt": "2026-09-05T07:09:36.526Z"
+    },
+    "log_77554ropg6": {
+      "id": "log_77554ropg6",
+      "organizationId": "org_6d3pevtnxf",
+      "userId": "3ae034cf-dcfa-4a3f-99e4-52eda128d467",
+      "eventType": "CLIENT_CREATED",
+      "entityType": "CLIENT",
+      "entityId": "cli_9elgh1d5cu",
+      "message": "Added client Sarah Connor (Cyberdyne Systems).",
+      "createdAt": "2026-09-05T07:10:58.073Z"
+    },
+    "log_1q97lqnqza": {
+      "id": "log_1q97lqnqza",
+      "organizationId": "org_6d3pevtnxf",
+      "userId": "3ae034cf-dcfa-4a3f-99e4-52eda128d467",
+      "eventType": "INVOICE_CREATED",
+      "entityType": "INVOICE",
+      "entityId": "inv_8kqickceli",
+      "message": "Created invoice #INV-9901 for Sarah Connor (INR 75,000).",
+      "createdAt": "2026-09-05T07:10:58.280Z"
+    },
+    "log_7ipppc6i0t": {
+      "id": "log_7ipppc6i0t",
+      "organizationId": "org_6d3pevtnxf",
+      "eventType": "PAYMENT_RECORDED",
+      "entityType": "INVOICE",
+      "entityId": "inv_8kqickceli",
+      "message": "Invoice #INV-9901 marked as PAID. All pending reminders halted.",
+      "createdAt": "2026-09-05T07:10:58.846Z"
+    }
+  },
+  "connections": {},
+  "connectionSecrets": {},
+  "automationSettings": {
+    "org_vop51qvyq2": {
+      "id": "as_org_vop51qvyq2",
+      "organizationId": "org_vop51qvyq2",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_7xr4nwludl": {
+      "id": "as_org_7xr4nwludl",
+      "organizationId": "org_7xr4nwludl",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_ccq97dykex": {
+      "id": "as_org_ccq97dykex",
+      "organizationId": "org_ccq97dykex",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_m90t1u6yb2": {
+      "id": "as_org_m90t1u6yb2",
+      "organizationId": "org_m90t1u6yb2",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_yzsbaeut65": {
+      "id": "as_org_yzsbaeut65",
+      "organizationId": "org_yzsbaeut65",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_fchhiqze7z": {
+      "id": "as_org_fchhiqze7z",
+      "organizationId": "org_fchhiqze7z",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_kieaptut7a": {
+      "id": "as_org_kieaptut7a",
+      "organizationId": "org_kieaptut7a",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_yn2847spvs": {
+      "id": "as_org_yn2847spvs",
+      "organizationId": "org_yn2847spvs",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_086lcun6hw": {
+      "id": "as_org_086lcun6hw",
+      "organizationId": "org_086lcun6hw",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_51e70l1hcj": {
+      "id": "as_org_51e70l1hcj",
+      "organizationId": "org_51e70l1hcj",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_y0irgv0wh1": {
+      "id": "as_org_y0irgv0wh1",
+      "organizationId": "org_y0irgv0wh1",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "10:00",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    },
+    "org_6d3pevtnxf": {
+      "id": "as_org_6d3pevtnxf",
+      "organizationId": "org_6d3pevtnxf",
+      "automaticReminders": true,
+      "automaticallyStopWhenPaid": true,
+      "avoidWeekends": true,
+      "preferredSendingTime": "11:30",
+      "timezone": "Asia/Kolkata",
+      "policyTier": "STANDARD",
+      "policyIntervals": {
+        "firstReminderDays": 3,
+        "secondReminderDays": 10,
+        "finalReminderDays": 17
+      },
+      "maxReminders": 3
+    }
+  },
+  "aiSettings": {
+    "org_vop51qvyq2": {
+      "id": "ai_org_vop51qvyq2",
+      "organizationId": "org_vop51qvyq2",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_7xr4nwludl": {
+      "id": "ai_org_7xr4nwludl",
+      "organizationId": "org_7xr4nwludl",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_ccq97dykex": {
+      "id": "ai_org_ccq97dykex",
+      "organizationId": "org_ccq97dykex",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_m90t1u6yb2": {
+      "id": "ai_org_m90t1u6yb2",
+      "organizationId": "org_m90t1u6yb2",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_yzsbaeut65": {
+      "id": "ai_org_yzsbaeut65",
+      "organizationId": "org_yzsbaeut65",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_fchhiqze7z": {
+      "id": "ai_org_fchhiqze7z",
+      "organizationId": "org_fchhiqze7z",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_kieaptut7a": {
+      "id": "ai_org_kieaptut7a",
+      "organizationId": "org_kieaptut7a",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_yn2847spvs": {
+      "id": "ai_org_yn2847spvs",
+      "organizationId": "org_yn2847spvs",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_086lcun6hw": {
+      "id": "ai_org_086lcun6hw",
+      "organizationId": "org_086lcun6hw",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_51e70l1hcj": {
+      "id": "ai_org_51e70l1hcj",
+      "organizationId": "org_51e70l1hcj",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_y0irgv0wh1": {
+      "id": "ai_org_y0irgv0wh1",
+      "organizationId": "org_y0irgv0wh1",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    },
+    "org_6d3pevtnxf": {
+      "id": "ai_org_6d3pevtnxf",
+      "organizationId": "org_6d3pevtnxf",
+      "communicationStyle": "PROFESSIONAL",
+      "relationshipAwarePersonalization": true,
+      "reviewBeforeSending": true
+    }
+  },
+  "subscriptions": {
+    "org_vop51qvyq2": {
+      "id": "sub_org_vop51qvyq2",
+      "organizationId": "org_vop51qvyq2",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T06:58:45.012Z",
+      "currentPeriodEnd": "2026-10-05T06:58:45.046Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_7xr4nwludl": {
+      "id": "sub_org_7xr4nwludl",
+      "organizationId": "org_7xr4nwludl",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T06:58:55.441Z",
+      "currentPeriodEnd": "2026-10-05T06:58:55.468Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_ccq97dykex": {
+      "id": "sub_org_ccq97dykex",
+      "organizationId": "org_ccq97dykex",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T06:59:13.318Z",
+      "currentPeriodEnd": "2026-10-05T06:59:13.357Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_m90t1u6yb2": {
+      "id": "sub_org_m90t1u6yb2",
+      "organizationId": "org_m90t1u6yb2",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T07:00:41.166Z",
+      "currentPeriodEnd": "2026-10-05T07:00:41.217Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_yzsbaeut65": {
+      "id": "sub_org_yzsbaeut65",
+      "organizationId": "org_yzsbaeut65",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T07:06:25.198Z",
+      "currentPeriodEnd": "2026-10-05T07:06:25.227Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_fchhiqze7z": {
+      "id": "sub_org_fchhiqze7z",
+      "organizationId": "org_fchhiqze7z",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T07:07:07.972Z",
+      "currentPeriodEnd": "2026-10-05T07:07:08.012Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_kieaptut7a": {
+      "id": "sub_org_kieaptut7a",
+      "organizationId": "org_kieaptut7a",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T07:07:21.015Z",
+      "currentPeriodEnd": "2026-10-05T07:07:21.041Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_yn2847spvs": {
+      "id": "sub_org_yn2847spvs",
+      "organizationId": "org_yn2847spvs",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T07:07:53.450Z",
+      "currentPeriodEnd": "2026-10-05T07:07:53.480Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_086lcun6hw": {
+      "id": "sub_org_086lcun6hw",
+      "organizationId": "org_086lcun6hw",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T07:09:12.835Z",
+      "currentPeriodEnd": "2026-10-05T07:09:12.860Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_51e70l1hcj": {
+      "id": "sub_org_51e70l1hcj",
+      "organizationId": "org_51e70l1hcj",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T07:09:17.218Z",
+      "currentPeriodEnd": "2026-10-05T07:09:17.252Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_y0irgv0wh1": {
+      "id": "sub_org_y0irgv0wh1",
+      "organizationId": "org_y0irgv0wh1",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T07:09:35.584Z",
+      "currentPeriodEnd": "2026-10-05T07:09:35.617Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    },
+    "org_6d3pevtnxf": {
+      "id": "sub_org_6d3pevtnxf",
+      "organizationId": "org_6d3pevtnxf",
+      "plan": "FREE",
+      "status": "ACTIVE",
+      "currentPeriodStart": "2026-09-05T07:10:57.726Z",
+      "currentPeriodEnd": "2026-10-05T07:10:57.758Z",
+      "cancelAtPeriodEnd": false,
+      "limits": {
+        "activeInvoices": 5,
+        "remindersPerMonth": 10,
+        "gmailAccounts": 1,
+        "aiReminders": false,
+        "relationshipIntelligence": false,
+        "customRules": false,
+        "teamMembers": 1
+      }
+    }
+  },
+  "usage": {
+    "org_vop51qvyq2": {
+      "organizationId": "org_vop51qvyq2",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_7xr4nwludl": {
+      "organizationId": "org_7xr4nwludl",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_ccq97dykex": {
+      "organizationId": "org_ccq97dykex",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_m90t1u6yb2": {
+      "organizationId": "org_m90t1u6yb2",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_yzsbaeut65": {
+      "organizationId": "org_yzsbaeut65",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_fchhiqze7z": {
+      "organizationId": "org_fchhiqze7z",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_kieaptut7a": {
+      "organizationId": "org_kieaptut7a",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_yn2847spvs": {
+      "organizationId": "org_yn2847spvs",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_086lcun6hw": {
+      "organizationId": "org_086lcun6hw",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_51e70l1hcj": {
+      "organizationId": "org_51e70l1hcj",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_y0irgv0wh1": {
+      "organizationId": "org_y0irgv0wh1",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    },
+    "org_6d3pevtnxf": {
+      "organizationId": "org_6d3pevtnxf",
+      "month": "2026-09",
+      "activeInvoicesCount": 0,
+      "remindersSentCount": 0,
+      "aiGenerationsCount": 0,
+      "connectedGmailAccounts": 0
+    }
+  },
+  "notifications": {}
+}
