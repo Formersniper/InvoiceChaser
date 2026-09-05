@@ -30,7 +30,7 @@ interface RequestOptions extends RequestInit {
   orgId?: string;
 }
 
-export async function apiRequest<T = any>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+export async function apiRequest<T = unknown>(endpoint: string, options: RequestOptions = {}): Promise<T> {
   const activeOrgId = options.orgId || getStoredOrgId();
 
   const headers: Record<string, string> = {
@@ -61,8 +61,8 @@ export async function apiRequest<T = any>(endpoint: string, options: RequestOpti
       // ignore non-JSON error
     }
     const err = new Error(errorMessage);
-    if (errorCode) (err as any).code = errorCode;
-    (err as any).status = response.status;
+    if (errorCode) Object.assign(err, { code: errorCode });
+    Object.assign(err, { status: response.status });
     throw err;
   }
 
@@ -70,23 +70,23 @@ export async function apiRequest<T = any>(endpoint: string, options: RequestOpti
 }
 
 export const api = {
-  get: <T = any>(endpoint: string, orgId?: string) =>
+  get: <T = unknown>(endpoint: string, orgId?: string) =>
     apiRequest<T>(endpoint, { method: 'GET', orgId }),
 
-  post: <T = any>(endpoint: string, body?: any, orgId?: string) =>
+  post: <T = unknown>(endpoint: string, body?: unknown, orgId?: string) =>
     apiRequest<T>(endpoint, {
       method: 'POST',
       body: body ? JSON.stringify(body) : undefined,
       orgId,
     }),
 
-  patch: <T = any>(endpoint: string, body?: any, orgId?: string) =>
+  patch: <T = unknown>(endpoint: string, body?: unknown, orgId?: string) =>
     apiRequest<T>(endpoint, {
       method: 'PATCH',
       body: body ? JSON.stringify(body) : undefined,
       orgId,
     }),
 
-  delete: <T = any>(endpoint: string, orgId?: string) =>
+  delete: <T = unknown>(endpoint: string, orgId?: string) =>
     apiRequest<T>(endpoint, { method: 'DELETE', orgId }),
 };

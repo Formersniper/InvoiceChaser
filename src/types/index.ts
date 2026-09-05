@@ -330,3 +330,45 @@ export interface GmailTestResult {
   lastTestedAt: string;
 }
 
+export interface WorkspaceSnapshot {
+  organization: Organization;
+  membership: Membership | null;
+  organizations: Organization[];
+  clients: Client[];
+  invoices: Invoice[];
+  reminders: Reminder[];
+  emailEvents: EmailEvent[];
+  auditLogs: AuditLog[];
+  connections: Connection[];
+  automationSettings: AutomationSettings;
+  aiSettings: AISettings;
+  subscription: Subscription;
+  usage: Usage;
+  notifications: NotificationItem[];
+}
+
+export interface AuthSessionResponse {
+  user: User;
+  organization: Organization;
+  workspace: WorkspaceSnapshot;
+}
+
+export interface AuthMeResponse {
+  user: User;
+  workspace: WorkspaceSnapshot;
+}
+
+export interface AuthLoginResponse {
+  user: User;
+  organization: Organization;
+  workspace: WorkspaceSnapshot;
+}
+
+export interface AuthSignupResponse {
+  user: User;
+  organization: Organization;
+  membership: Membership;
+  workspace?: WorkspaceSnapshot;
+  requiresEmailConfirmation?: boolean;
+}
+

@@ -40,6 +40,27 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode, navigate }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
+  React.useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const errParam = params.get('error');
+      if (errParam) {
+        if (errParam === 'cancelled') {
+          setError('Google sign-in was cancelled.');
+        } else if (errParam === 'oauth_failed' || errParam === 'auth_failed') {
+          setError('Authentication failed. Please try again or sign in with email and password.');
+        } else {
+          setError('Authentication failed. Please try again.');
+        }
+        if (window.history && window.history.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+      }
+    } catch {
+      // Ignore URL parsing errors
+    }
+  }, []);
+
   const handleGoogleSignIn = async () => {
     setError('');
     setMessage('');

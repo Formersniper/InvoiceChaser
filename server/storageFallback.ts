@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import {
   User,
   Organization,
@@ -46,65 +44,41 @@ interface LocalStoreData {
   notifications: Record<string, NotificationItem>;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), 'data');
-const STORE_FILE = path.join(DATA_DIR, 'store.json');
-
 let inMemoryStore: LocalStoreData | null = null;
 
 function loadStore(): LocalStoreData {
   if (inMemoryStore) return inMemoryStore;
 
-  try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    if (fs.existsSync(STORE_FILE)) {
-      const raw = fs.readFileSync(STORE_FILE, 'utf-8');
-      inMemoryStore = JSON.parse(raw);
-    }
-  } catch (err) {
-    console.warn('Failed to read local storage file, starting fresh in-memory:', err);
-  }
-
-  if (!inMemoryStore) {
-    inMemoryStore = {
-      users: {},
-      organizations: {},
-      memberships: {},
-      clients: {},
-      invoices: {},
-      reminders: {},
-      emailEvents: {},
-      auditLogs: {},
-      connections: {},
-      connectionSecrets: {},
-      automationSettings: {},
-      aiSettings: {},
-      subscriptions: {},
-      usage: {},
-      notifications: {},
-    };
-  }
+  inMemoryStore = {
+    users: {},
+    organizations: {},
+    memberships: {},
+    clients: {},
+    invoices: {},
+    reminders: {},
+    emailEvents: {},
+    auditLogs: {},
+    connections: {},
+    connectionSecrets: {},
+    automationSettings: {},
+    aiSettings: {},
+    subscriptions: {},
+    usage: {},
+    notifications: {},
+  };
 
   return inMemoryStore;
 }
 
 function persistStore(): void {
-  try {
-    if (!inMemoryStore) return;
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    fs.writeFileSync(STORE_FILE, JSON.stringify(inMemoryStore, null, 2), 'utf-8');
-  } catch (err) {
-    console.warn('Failed to persist store to disk:', err);
-  }
+  // No-op: File persistence removed. Authoritative data resides in Supabase/PostgreSQL.
 }
 
-export function isSchemaCacheMissing(error: any): boolean {
+export function isSchemaCacheMissing(error: unknown): boolean {
   if (!error) return false;
-  const msg = (typeof error === 'string' ? error : `${error.message || ''} ${error.details || ''} ${error.hint || ''} ${JSON.stringify(error)}`).toLowerCase();
-  const code = String(error.code || '');
+  const errObj = typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : {};
+  const msg = (typeof error === 'string' ? error : `${String(errObj.message || '')} ${String(errObj.details || '')} ${String(errObj.hint || '')} ${JSON.stringify(error)}`).toLowerCase();
+  const code = String(errObj.code || '');
   return (
     code.startsWith('PGRST') ||
     msg.includes('schema cache') ||

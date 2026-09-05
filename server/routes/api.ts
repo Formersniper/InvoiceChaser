@@ -1,5 +1,6 @@
-import { Router, Request } from 'express';
+import { Router, Request, Response } from 'express';
 import { getSupabase } from '../supabase';
+import { RelationshipType, User, Organization, WorkspaceSnapshot } from '../../src/types';
 import {
   findUserById,
   upsertUserRecord,
@@ -87,7 +88,7 @@ apiRouter.post('/auth/signup', async (req, res) => {
     const supabase = getSupabase();
 
     // 1. Create or resolve user in Supabase Auth via admin (auto-confirms email to prevent rate-limiting & confirmation lockouts)
-    let authUser: any = null;
+    let authUser: { id: string; email?: string } | null = null;
     let token: string | undefined = undefined;
 
     const { data: createData, error: createError } = await supabase.auth.admin.createUser({
@@ -193,7 +194,7 @@ apiRouter.post('/auth/login', async (req, res) => {
     // If unconfirmed email prevents login, auto-confirm via admin and retry
     if (authError && authError.message.toLowerCase().includes('email not confirmed')) {
       const { data: listData } = await supabase.auth.admin.listUsers();
-      const match = listData?.users?.find((u: any) => u.email?.toLowerCase() === normalizedEmail);
+      const match = listData?.users?.find((u: { email?: string }) => u.email?.toLowerCase() === normalizedEmail);
       if (match) {
         await supabase.auth.admin.updateUserById(match.id, { email_confirm: true });
         const retry = await supabase.auth.signInWithPassword({
@@ -285,11 +286,82 @@ apiRouter.post('/auth/forgot-password', async (req, res) => {
   }
 });
 
+export async function ensureUserWorkspace(authUser: {
+  id: string;
+  email: string;
+  name: string;
+  avatarUrl?: string;
+  companyName?: string;
+}): Promise<{ user: User; organization: Organization; workspace: WorkspaceSnapshot }> {
+  let user = await findUserById(authUser.id);
+  if (!user) {
+    user = await upsertUserRecord({
+      id: authUser.id,
+      email: authUser.email,
+      name: authUser.name,
+      avatarUrl: authUser.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(authUser.name)}`,
+    });
+  }
+
+  const orgs = await getUserOrganizations(user.id);
+  let organization = orgs[0];
+
+  if (!organization) {
+    const orgName = authUser.companyName || `${user.name}'s Studio`;
+    const created = await createOrganizationForUser(user, orgName);
+    organization = created.organization;
+  }
+
+  const workspace = await getWorkspaceSnapshot(user.id, organization.id);
+  return { user, organization, workspace };
+}
+
 apiRouter.get('/auth/config', (_req, res) => {
   return res.json({
     supabaseUrl: process.env.SUPABASE_URL || '',
     supabaseAnonKey: process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || '',
   });
+});
+
+/**
+ * Server-Authoritative Google OAuth Initiation:
+ * Calls Supabase Auth to generate the Google OAuth authorization URL.
+ * Scopes are STRICTLY limited to 'openid email profile'.
+ * Does NOT request gmail.readonly.
+ */
+apiRouter.get('/auth/google', async (req, res) => {
+  try {
+    const supabase = getSupabase();
+    const host = req.get('x-forwarded-host') || req.get('host') || 'localhost:3000';
+    const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
+    const redirectUrl = `${proto}://${host}/auth/callback`;
+
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: redirectUrl,
+        scopes: 'openid email profile',
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'select_account',
+        },
+      },
+    });
+
+    if (error || !data?.url) {
+      console.error('Failed to initialize Supabase Google OAuth:', error?.message);
+      return res.status(500).json({ error: 'Failed to initiate Google authentication. Please try again.' });
+    }
+
+    if (req.headers.accept?.includes('application/json')) {
+      return res.json({ url: data.url });
+    }
+    return res.redirect(data.url);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    console.error('Google OAuth initiation error:', msg);
+    return res.status(500).json({ error: 'Failed to start Google sign-in.' });
+  }
 });
 
 /**
@@ -299,10 +371,11 @@ apiRouter.get('/auth/config', (_req, res) => {
  * Resolves or creates user organization.
  * Sets secure, httpOnly cookies (ic_token & sb_token) for subsequent authenticated requests.
  * Never trusts arbitrary client-supplied user IDs or email matching.
+ * Does NOT expose tokens back to the browser in the JSON response.
  */
 apiRouter.post('/auth/session', async (req, res) => {
   try {
-    const { accessToken, refreshToken, code } = req.body;
+    const { accessToken, code } = req.body;
     const supabase = getSupabase();
 
     let resolvedToken = accessToken as string | undefined;
@@ -343,33 +416,20 @@ apiRouter.post('/auth/session', async (req, res) => {
       authUser.user_metadata?.picture ||
       `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(googleName)}`;
 
-    // 4. Ensure public.users contains the record matching Supabase Auth ID exactly
-    let user = await findUserById(authUser.id);
-    if (!user) {
-      user = await upsertUserRecord({
-        id: authUser.id,
-        email: authUser.email || '',
-        name: googleName,
-        avatarUrl: googleAvatar,
-      });
-    }
+    // 4. Ensure public.users and organization workspace exist
+    const { user, organization, workspace } = await ensureUserWorkspace({
+      id: authUser.id,
+      email: authUser.email || '',
+      name: googleName,
+      avatarUrl: googleAvatar,
+      companyName: authUser.user_metadata?.companyName,
+    });
 
-    // 5. Resolve user organization membership (reuse existing; do not duplicate)
-    const orgs = await getUserOrganizations(user.id);
-    let organization = orgs[0];
-
-    if (!organization) {
-      const orgName = authUser.user_metadata?.companyName || `${user.name}'s Studio`;
-      const created = await createOrganizationForUser(user, orgName);
-      organization = created.organization;
-    }
-
-    // 6. Set authoritative httpOnly session cookies
+    // 5. Set authoritative httpOnly session cookies (ic_token & sb_token)
     res.cookie('ic_token', resolvedToken, getAuthCookieOptions(req));
     res.cookie('sb_token', resolvedToken, getAuthCookieOptions(req));
 
-    const workspace = await getWorkspaceSnapshot(user.id, organization.id);
-
+    // Return authenticated user and workspace snapshot without exposing raw JWTs
     return res.json({
       user: {
         id: user.id,
@@ -379,7 +439,6 @@ apiRouter.post('/auth/session', async (req, res) => {
       },
       organization,
       workspace,
-      accessToken: resolvedToken,
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Session synchronization failed.';
@@ -812,7 +871,9 @@ apiRouter.post('/reminders', requireAuth, requireOrgMember, async (req: Authenti
     return res.status(201).json(reminder);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to create reminder.';
-    const status = (err as any)?.status || 400;
+    const status = err instanceof Error && 'status' in err && typeof (err as Error & { status?: number }).status === 'number'
+      ? (err as Error & { status?: number }).status!
+      : 400;
     console.error('Reminder creation error:', err);
     return res.status(status).json({ error: msg });
   }
@@ -837,7 +898,7 @@ apiRouter.patch('/reminders/:id', requireAuth, requireOrgMember, async (req: Aut
   }
 });
 
-const handleApproveReminder = async (req: AuthenticatedRequest, res: any) => {
+const handleApproveReminder = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const senderEmail = req.user?.email || 'accounts@yourbusiness.com';
     const sent = await approveAndSendReminder(req.organizationId!, req.params.id, senderEmail);
@@ -853,7 +914,7 @@ const handleApproveReminder = async (req: AuthenticatedRequest, res: any) => {
     return res.json(sent);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to send reminder.';
-    const code = (err as any)?.code;
+    const code = err instanceof Error && 'code' in err ? (err as Error & { code?: string }).code : undefined;
     console.error('Approve reminder error:', err);
     if (code === 'INTEGRATION_REQUIRED') {
       return res.status(422).json({ error: msg, code });
@@ -930,7 +991,7 @@ apiRouter.post('/gemini/generate-reminder', requireAuth, requireOrgMember, async
       dueDateFormatted: invoice.dueDate,
       daysOverdue: invoice.daysOverdue,
       sequenceNumber: targetSeq,
-      relationshipType: targetRelationship as any,
+      relationshipType: targetRelationship as RelationshipType,
       tone: communicationStyle || 'PROFESSIONAL',
       customInstructions: customInstructions ? String(customInstructions).slice(0, 500) : undefined,
     });
@@ -1281,7 +1342,7 @@ apiRouter.patch('/settings/ai', requireAuth, requireOrgMember, async (req: Authe
   }
 });
 
-const handleUpgradePlan = async (req: AuthenticatedRequest, res: any) => {
+const handleUpgradePlan = async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { plan } = req.body;
     if (!plan) return res.status(400).json({ error: 'Plan is required.' });
@@ -1321,7 +1382,7 @@ apiRouter.get('/notifications', requireAuth, requireOrgMember, async (req: Authe
   }
 });
 
-const handleMarkNotificationRead = async (req: AuthenticatedRequest, res: any) => {
+const handleMarkNotificationRead = async (req: AuthenticatedRequest, res: Response) => {
   try {
     await markNotificationRead(req.organizationId!, req.params.id);
     return res.json({ success: true });
@@ -1335,7 +1396,7 @@ const handleMarkNotificationRead = async (req: AuthenticatedRequest, res: any) =
 apiRouter.post('/notifications/:id/read', requireAuth, requireOrgMember, handleMarkNotificationRead);
 apiRouter.patch('/notifications/:id/read', requireAuth, requireOrgMember, handleMarkNotificationRead);
 
-const handleMarkAllNotificationsRead = async (req: AuthenticatedRequest, res: any) => {
+const handleMarkAllNotificationsRead = async (req: AuthenticatedRequest, res: Response) => {
   try {
     await markAllNotificationsRead(req.organizationId!);
     return res.json({ success: true });
