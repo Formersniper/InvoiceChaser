@@ -45,6 +45,15 @@ import {
 } from '../db';
 import { requireAuth, requireOrgMember, AuthenticatedRequest } from '../auth';
 import { generateReminderDraft } from '../gemini';
+import { createSignedOAuthState, verifySignedOAuthState } from '../crypto';
+import {
+  validateGoogleOAuthConfig,
+  generateGmailAuthUrl,
+  handleGmailOAuthCallback,
+  testGmailConnection,
+  getRecentGmailMessages,
+  disconnectGmailIntegration,
+} from '../gmail';
 
 export const apiRouter = Router();
 
@@ -804,16 +813,218 @@ apiRouter.get('/connections', requireAuth, requireOrgMember, async (req: Authent
   }
 });
 
+/* -------------------------------------------------------------
+   GMAIL OAUTH & INTEGRATION ENDPOINTS (IC-V1.0.4)
+------------------------------------------------------------- */
+
+/**
+ * Initiates the Google OAuth 2.0 flow for Gmail read-only access.
+ * Enforces organization tenant boundaries and sets a signed CSRF state cookie.
+ */
+apiRouter.get('/connections/gmail/connect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  try {
+    validateGoogleOAuthConfig();
+
+    const state = createSignedOAuthState(req.user!.id, req.organizationId!);
+
+    // Store state in a secure, short-lived httpOnly cookie to prevent CSRF
+    res.cookie('ic_oauth_state', state, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 10 * 60 * 1000, // 10 minutes
+      path: '/',
+    });
+
+    const authUrl = generateGmailAuthUrl(state);
+
+    await createAuditLog(req.organizationId!, {
+      userId: req.user!.id,
+      eventType: 'INTEGRATION_CONNECTED',
+      entityType: 'INTEGRATION',
+      entityId: 'GMAIL',
+      message: 'Initiated Google OAuth authorization flow for Gmail.',
+    });
+
+    if (req.query.redirect === 'true') {
+      return res.redirect(authUrl);
+    }
+
+    return res.json({ authUrl });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Failed to initiate Gmail connection.';
+    console.error('Gmail connect error:', err);
+    return res.status(400).json({ error: msg });
+  }
+});
+
+/**
+ * Handles the Google OAuth 2.0 redirect callback.
+ * Validates CSRF state, exchanges code for tokens, encrypts tokens, and updates DB.
+ */
+apiRouter.get('/connections/gmail/callback', async (req, res) => {
+  const { code, state, error: googleError } = req.query;
+
+  const cookieState = req.cookies?.ic_oauth_state;
+  // Clear the state cookie immediately
+  res.clearCookie('ic_oauth_state', { path: '/' });
+
+  if (googleError) {
+    console.warn('Google OAuth returned error:', googleError);
+    return res.redirect(`/app/connections?error=${encodeURIComponent(String(googleError))}`);
+  }
+
+  if (!code || !state || typeof code !== 'string' || typeof state !== 'string') {
+    return res.redirect('/app/connections?error=invalid_oauth_response');
+  }
+
+  // Verify signed state parameter
+  let statePayload;
+  try {
+    statePayload = verifySignedOAuthState(state);
+  } catch (stateErr: unknown) {
+    const msg = stateErr instanceof Error ? stateErr.message : 'OAuth state verification failed';
+    console.error('Invalid OAuth state:', msg);
+    return res.redirect(`/app/connections?error=${encodeURIComponent(msg)}`);
+  }
+
+  // Cross-check with cookie state if cookie is present
+  if (cookieState && cookieState !== state) {
+    console.error('OAuth state mismatch between cookie and callback parameter.');
+    return res.redirect('/app/connections?error=csrf_state_mismatch');
+  }
+
+  const { organizationId, userId } = statePayload;
+
+  try {
+    const { accountEmail } = await handleGmailOAuthCallback(organizationId, code);
+
+    await createAuditLog(organizationId, {
+      userId,
+      eventType: 'INTEGRATION_CONNECTED',
+      entityType: 'INTEGRATION',
+      entityId: 'GMAIL',
+      message: `Successfully connected Gmail account: ${accountEmail}`,
+    });
+
+    return res.redirect('/app/connections?connected=gmail');
+  } catch (exchangeErr: unknown) {
+    const msg = exchangeErr instanceof Error ? exchangeErr.message : 'Failed to complete Google OAuth exchange';
+    console.error('Gmail OAuth exchange error:', exchangeErr);
+    return res.redirect(`/app/connections?error=${encodeURIComponent(msg)}`);
+  }
+});
+
+/**
+ * Live connection health check:
+ * Calls Gmail API `users.getProfile` to verify active OAuth authorization.
+ */
+apiRouter.get('/connections/gmail/test', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  try {
+    const result = await testGmailConnection(req.organizationId!);
+
+    await createAuditLog(req.organizationId!, {
+      userId: req.user!.id,
+      eventType: 'INTEGRATION_SYNCED',
+      entityType: 'INTEGRATION',
+      entityId: 'GMAIL',
+      message: `Verified Gmail API connectivity for account: ${result.email}`,
+    });
+
+    return res.json(result);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Failed to test Gmail connection.';
+    console.error('Gmail test error:', err);
+
+    await createAuditLog(req.organizationId!, {
+      userId: req.user!.id,
+      eventType: 'INTEGRATION_ERROR',
+      entityType: 'INTEGRATION',
+      entityId: 'GMAIL',
+      message: `Gmail connection test failed: ${msg}`,
+    });
+
+    return res.status(400).json({ error: msg });
+  }
+});
+
+/**
+ * Live Gmail message reader (read-only verification test):
+ * Reads up to 5-10 recent email headers & safe snippets to prove read-only access.
+ */
+apiRouter.get('/connections/gmail/messages', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 5;
+    const messages = await getRecentGmailMessages(req.organizationId!, limit);
+    return res.json({ messages });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Failed to fetch Gmail messages.';
+    console.error('Gmail messages fetch error:', err);
+    return res.status(400).json({ error: msg });
+  }
+});
+
+/**
+ * Disconnects Gmail integration and revokes OAuth tokens.
+ */
+apiRouter.delete('/connections/gmail', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  try {
+    await disconnectGmailIntegration(req.organizationId!);
+
+    await createAuditLog(req.organizationId!, {
+      userId: req.user!.id,
+      eventType: 'INTEGRATION_DISCONNECTED',
+      entityType: 'INTEGRATION',
+      entityId: 'GMAIL',
+      message: 'Disconnected Gmail integration account.',
+    });
+
+    return res.json({ success: true, status: 'DISCONNECTED' });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Failed to disconnect Gmail.';
+    console.error('Gmail disconnect error:', err);
+    return res.status(500).json({ error: msg });
+  }
+});
+
+apiRouter.post('/connections/gmail/disconnect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  try {
+    await disconnectGmailIntegration(req.organizationId!);
+
+    await createAuditLog(req.organizationId!, {
+      userId: req.user!.id,
+      eventType: 'INTEGRATION_DISCONNECTED',
+      entityType: 'INTEGRATION',
+      entityId: 'GMAIL',
+      message: 'Disconnected Gmail integration account.',
+    });
+
+    return res.json({ success: true, status: 'DISCONNECTED' });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Failed to disconnect Gmail.';
+    console.error('Gmail disconnect error:', err);
+    return res.status(500).json({ error: msg });
+  }
+});
+
 apiRouter.post('/connections/:provider/connect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  const provider = req.params.provider?.toUpperCase();
+  if (provider === 'GMAIL') {
+    return res.redirect('/api/connections/gmail/connect');
+  }
   return res.status(501).json({
-    error: 'Integration not implemented. Live Google Workspace OAuth will be enabled in IC-V1.0.4.',
+    error: 'Google Sheets live sync not implemented in this version.',
     code: 'INTEGRATION_NOT_IMPLEMENTED',
   });
 });
 
 apiRouter.post('/connections/connect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
+  const provider = req.body.provider?.toUpperCase();
+  if (provider === 'GMAIL') {
+    return res.redirect('/api/connections/gmail/connect');
+  }
   return res.status(501).json({
-    error: 'Integration not implemented. Live Google Workspace OAuth will be enabled in IC-V1.0.4.',
+    error: 'Google Sheets live sync not implemented in this version.',
     code: 'INTEGRATION_NOT_IMPLEMENTED',
   });
 });
@@ -835,17 +1046,21 @@ apiRouter.post('/invoices/import-sheets', requireAuth, requireOrgMember, async (
 apiRouter.post('/connections/:provider/disconnect', requireAuth, requireOrgMember, async (req: AuthenticatedRequest, res) => {
   try {
     const provider = req.params.provider.toUpperCase() as 'GMAIL' | 'GOOGLE_SHEETS';
-    const disconnected = await disconnectConnection(req.organizationId!, provider);
+    if (provider === 'GMAIL') {
+      await disconnectGmailIntegration(req.organizationId!);
+    } else {
+      await disconnectConnection(req.organizationId!, provider);
+    }
 
     await createAuditLog(req.organizationId!, {
       userId: req.user!.id,
       eventType: 'INTEGRATION_DISCONNECTED',
       entityType: 'INTEGRATION',
-      entityId: disconnected.id,
+      entityId: provider,
       message: `Disconnected ${provider} integration account.`,
     });
 
-    return res.json(disconnected);
+    return res.json({ success: true, status: 'DISCONNECTED' });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to disconnect integration.';
     console.error('Disconnect error:', err);

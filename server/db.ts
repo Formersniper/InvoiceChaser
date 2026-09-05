@@ -221,7 +221,9 @@ function mapConnection(row: any): Connection {
     accountIdentifier: row.account_identifier,
     scopes: Array.isArray(row.scopes) ? row.scopes : [],
     lastSyncAt: row.last_sync_at || undefined,
+    lastTestedAt: row.last_tested_at || undefined,
     lastError: row.last_error || undefined,
+    errorMessage: row.error_message || row.last_error || undefined,
     sheetMetadata: row.sheet_metadata || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1530,6 +1532,10 @@ export async function disconnectConnection(
       status: 'DISCONNECTED',
       account_identifier: '',
       scopes: [],
+      oauth_access_token_encrypted: null,
+      oauth_refresh_token_encrypted: null,
+      oauth_token_expires_at: null,
+      error_message: null,
       updated_at: new Date().toISOString(),
     })
     .eq('organization_id', orgId)
@@ -1551,6 +1557,172 @@ export async function disconnectConnection(
   }
   return mapConnection(row);
 }
+
+export interface GmailConnectionSecrets {
+  id: string;
+  organizationId: string;
+  status: string;
+  accountIdentifier: string;
+  encryptedAccessToken?: string;
+  encryptedRefreshToken?: string;
+  tokenExpiresAt?: string;
+  scopes: string[];
+}
+
+/**
+ * Server-only method to retrieve encrypted OAuth tokens for Gmail API execution.
+ * NEVER return this directly to API responses or the frontend.
+ */
+export async function getGmailConnectionSecrets(orgId: string): Promise<GmailConnectionSecrets | null> {
+  const supabase = getSupabase();
+  const { data, error } = await supabase
+    .from('connections')
+    .select('id, organization_id, status, account_identifier, scopes, oauth_access_token_encrypted, oauth_refresh_token_encrypted, oauth_token_expires_at')
+    .eq('organization_id', orgId)
+    .eq('provider', 'GMAIL')
+    .single();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return {
+    id: data.id,
+    organizationId: data.organization_id,
+    status: data.status,
+    accountIdentifier: data.account_identifier,
+    encryptedAccessToken: data.oauth_access_token_encrypted || undefined,
+    encryptedRefreshToken: data.oauth_refresh_token_encrypted || undefined,
+    tokenExpiresAt: data.oauth_token_expires_at || undefined,
+    scopes: Array.isArray(data.scopes) ? data.scopes : [],
+  };
+}
+
+/**
+ * Persists an authenticated Gmail OAuth connection with encrypted tokens.
+ */
+export async function saveGmailOAuthConnection(
+  orgId: string,
+  data: {
+    accountEmail: string;
+    encryptedAccessToken: string;
+    encryptedRefreshToken?: string;
+    tokenExpiresAt?: string;
+    scopes: string[];
+  }
+): Promise<Connection> {
+  const supabase = getSupabase();
+  const payload: Record<string, any> = {
+    organization_id: orgId,
+    provider: 'GMAIL',
+    status: 'CONNECTED',
+    account_identifier: data.accountEmail,
+    scopes: data.scopes,
+    oauth_access_token_encrypted: data.encryptedAccessToken,
+    oauth_token_expires_at: data.tokenExpiresAt || null,
+    last_tested_at: new Date().toISOString(),
+    last_sync_at: new Date().toISOString(),
+    error_message: null,
+    last_error: null,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (data.encryptedRefreshToken) {
+    payload.oauth_refresh_token_encrypted = data.encryptedRefreshToken;
+  }
+
+  const { data: row, error } = await supabase
+    .from('connections')
+    .upsert(payload, { onConflict: 'organization_id,provider' })
+    .select('*')
+    .single();
+
+  if (error || !row) {
+    throw new Error(`Failed to save Gmail connection: ${error?.message}`);
+  }
+
+  return mapConnection(row);
+}
+
+/**
+ * Updates Gmail connection verification state (e.g. following a test or error).
+ */
+export async function updateGmailConnectionStatus(
+  orgId: string,
+  status: 'CONNECTED' | 'DISCONNECTED' | 'EXPIRED' | 'ERROR',
+  lastTestedAt?: string,
+  errorMessage?: string
+): Promise<Connection> {
+  const supabase = getSupabase();
+  const updates: Record<string, any> = {
+    status,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (lastTestedAt) {
+    updates.last_tested_at = lastTestedAt;
+    updates.last_sync_at = lastTestedAt;
+  }
+
+  if (errorMessage !== undefined) {
+    updates.error_message = errorMessage;
+    updates.last_error = errorMessage;
+  } else if (status === 'CONNECTED') {
+    updates.error_message = null;
+    updates.last_error = null;
+  }
+
+  const { data: row, error } = await supabase
+    .from('connections')
+    .update(updates)
+    .eq('organization_id', orgId)
+    .eq('provider', 'GMAIL')
+    .select('*')
+    .single();
+
+  if (error || !row) {
+    throw new Error(`Failed to update Gmail connection status: ${error?.message}`);
+  }
+
+  return mapConnection(row);
+}
+
+/**
+ * Saves refreshed OAuth access tokens emitted during token rotation.
+ */
+export async function updateGmailRefreshedTokens(
+  orgId: string,
+  encryptedAccessToken: string,
+  tokenExpiresAt?: string,
+  encryptedRefreshToken?: string
+): Promise<void> {
+  const supabase = getSupabase();
+  const updates: Record<string, any> = {
+    oauth_access_token_encrypted: encryptedAccessToken,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (tokenExpiresAt) {
+    updates.oauth_token_expires_at = tokenExpiresAt;
+  }
+  if (encryptedRefreshToken) {
+    updates.oauth_refresh_token_encrypted = encryptedRefreshToken;
+  }
+
+  await supabase
+    .from('connections')
+    .update(updates)
+    .eq('organization_id', orgId)
+    .eq('provider', 'GMAIL');
+}
+
+/**
+ * Disconnects the organization's Gmail connection and wipes tokens from database.
+ */
+export async function disconnectGmailConnection(orgId: string): Promise<Connection> {
+  return disconnectConnection(orgId, 'GMAIL');
+}
+
 
 // ============================================================================
 // SETTINGS (Automation & AI) (Tenant Scoped)

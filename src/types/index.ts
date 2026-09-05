@@ -186,7 +186,9 @@ export interface Connection {
   accountIdentifier: string;
   scopes: string[];
   lastSyncAt?: string;
+  lastTestedAt?: string;
   lastError?: string;
+  errorMessage?: string;
   createdAt: string;
   updatedAt: string;
   sheetMetadata?: {
@@ -308,3 +310,23 @@ export interface UpdateInvoiceInput {
   dueDate?: string;
   notes?: string;
 }
+
+export interface GmailMessagePreview {
+  id: string;
+  threadId: string;
+  subject: string;
+  from: string;
+  to: string;
+  date: string;
+  snippet: string;
+  bodyPreview?: string;
+}
+
+export interface GmailTestResult {
+  success: boolean;
+  email: string;
+  messagesTotal?: number;
+  threadsTotal?: number;
+  lastTestedAt: string;
+}
+

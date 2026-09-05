@@ -17,6 +17,8 @@ import {
   CommunicationStyle,
   SubscriptionPlan,
   ConnectionProvider,
+  GmailTestResult,
+  GmailMessagePreview,
 } from '../types';
 import {
   INITIAL_USER,
@@ -92,7 +94,10 @@ export interface AppContextType {
   // Connections
   connections: Connection[];
   connectGmail: (email: string) => Promise<boolean>;
+  initiateGmailOAuth: () => Promise<string>;
   disconnectGmail: () => Promise<void>;
+  testGmailConnection: () => Promise<GmailTestResult>;
+  getRecentGmailMessages: (limit?: number) => Promise<GmailMessagePreview[]>;
   connectSheets: (spreadsheetId: string, sheetName: string, columnMapping: Record<string, string>) => Promise<boolean>;
   disconnectSheets: () => Promise<void>;
   disconnectConnection: (provider: ConnectionProvider | string) => Promise<void>;
@@ -535,26 +540,41 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   // CONNECTIONS OPERATIONS
+  const initiateGmailOAuth = async (): Promise<string> => {
+    const res = await api.get<{ authUrl: string }>('/api/connections/gmail/connect', organization.id);
+    return res.authUrl;
+  };
+
   const connectGmail = async (accountEmail: string): Promise<boolean> => {
     try {
-      const conn = await api.post<Connection>(
-        '/api/connections/connect',
-        { provider: 'GMAIL', accountIdentifier: accountEmail },
-        organization.id
-      );
-      setConnections((prev) => {
-        const filtered = prev.filter((c) => c.provider !== 'GMAIL');
-        return [...filtered, conn];
-      });
-      return true;
+      const authUrl = await initiateGmailOAuth();
+      if (authUrl) {
+        window.location.href = authUrl;
+        return true;
+      }
+      return false;
     } catch {
       return false;
     }
   };
 
   const disconnectGmail = async () => {
-    await api.post('/api/connections/GMAIL/disconnect', {}, organization.id);
+    await api.post('/api/connections/gmail/disconnect', {}, organization.id);
     await fetchOrgData(organization.id);
+  };
+
+  const testGmailConnection = async (): Promise<GmailTestResult> => {
+    const res = await api.get<GmailTestResult>('/api/connections/gmail/test', organization.id);
+    await fetchOrgData(organization.id);
+    return res;
+  };
+
+  const getRecentGmailMessages = async (limit: number = 5): Promise<GmailMessagePreview[]> => {
+    const res = await api.get<{ messages: GmailMessagePreview[] }>(
+      `/api/connections/gmail/messages?limit=${limit}`,
+      organization.id
+    );
+    return res.messages || [];
   };
 
   const connectSheets = async (
@@ -678,7 +698,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         addAuditLog,
         connections,
         connectGmail,
+        initiateGmailOAuth,
         disconnectGmail,
+        testGmailConnection,
+        getRecentGmailMessages,
         connectSheets,
         disconnectSheets,
         disconnectConnection,

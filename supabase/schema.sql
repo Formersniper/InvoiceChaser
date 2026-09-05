@@ -164,6 +164,11 @@ CREATE TABLE IF NOT EXISTS public.connections (
   status TEXT NOT NULL DEFAULT 'DISCONNECTED', -- 'CONNECTED'|'DISCONNECTED'|'EXPIRED'|'ERROR'
   account_identifier TEXT NOT NULL,
   scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+  oauth_access_token_encrypted TEXT,
+  oauth_refresh_token_encrypted TEXT,
+  oauth_token_expires_at TIMESTAMPTZ,
+  last_tested_at TIMESTAMPTZ,
+  error_message TEXT,
   last_sync_at TIMESTAMPTZ,
   last_error TEXT,
   sheet_metadata JSONB,
